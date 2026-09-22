@@ -1,0 +1,16 @@
+services:
+  legal-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: legal-agent
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./runtime:/app/runtime
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

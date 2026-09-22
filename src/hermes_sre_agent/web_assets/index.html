@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="hermes-token" content="__HERMES_TOKEN__">
+<title>Hermes · 代码审查</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23142738'/%3E%3Cpath d='M10 8v16m12-16v16M10 16h12' stroke='%235fe0bf' stroke-width='3'/%3E%3C/svg%3E">
+<style>
+:root{font-family:Inter,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#23313b;background:#fafbfc;font-size:16px;--line:#e3e8ec;--muted:#73818b;--accent:#166953}
+*{box-sizing:border-box}body{margin:0}button,input,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}button:focus-visible,a:focus-visible{outline:3px solid #3caa8b;outline-offset:3px}
+.app{display:grid;grid-template-columns:250px minmax(0,1fr);height:100dvh}.sidebar{background:#f1f4f5;border-right:1px solid var(--line);padding:26px 16px;display:flex;flex-direction:column;gap:24px;min-width:0}
+.brand{font-weight:750;letter-spacing:.06em;display:flex;align-items:center;gap:10px;padding:0 10px}.mark{display:grid;place-items:center;width:32px;height:32px;background:#142738;color:#5fe0bf;border-radius:9px;font:700 21px Georgia,serif}
+.open-button{border:1px solid #cdd6dc;background:white;border-radius:9px;padding:11px 14px;text-align:left;font-size:.875rem;color:#344752;display:flex;gap:10px;align-items:center}
+.caption{font-size:.75rem;color:var(--muted);letter-spacing:.08em;margin:0 10px 10px}.projects{display:grid;gap:5px;overflow:auto}.project{border:0;background:transparent;border-radius:8px;text-align:left;padding:11px 12px;color:#50606a;min-width:0;width:100%}.project.active{background:#e1ebe7;color:#125b49}.project-name{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.875rem}.project-path{display:block;font-size:.75rem;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#76867d}
+.sidebar-bottom{margin-top:auto;color:var(--muted);font-size:.75rem;line-height:1.8;padding:0 10px}.pill{display:inline-flex;gap:6px;align-items:center;border:1px solid #d8e5df;background:#edf6f1;color:#2f6b53;border-radius:6px;padding:3px 8px;font-size:.75rem}.pill::before{content:"";height:5px;width:5px;border-radius:50%;background:#45896d}
+main{min-width:0;display:flex;flex-direction:column;height:100dvh}.topbar{height:76px;flex-shrink:0;border-bottom:1px solid var(--line);padding:0 32px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff}.title{font-size:.9rem;font-weight:650}.breadcrumb{font-size:.8rem;color:var(--muted);margin-bottom:3px}.text-button{border:1px solid var(--line);background:white;color:#596b74;border-radius:7px;padding:7px 12px;font-size:.8rem}
+.scroll{flex:1;overflow:auto;scroll-behavior:smooth}.conversation{max-width:920px;margin:auto;padding:30px 36px 50px}.welcome{padding:70px 0 38px;max-width:690px;margin:auto}.welcome .mark{width:48px;height:48px;font-size:30px;margin-bottom:26px}h1{font-size:2rem;letter-spacing:-.04em;font-weight:630;margin:0 0 13px}.welcome p{color:var(--muted);line-height:1.9;margin:0 0 28px}.suggestions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.suggestion{text-align:left;border:1px solid var(--line);border-radius:10px;padding:17px;background:white;font-size:.875rem;color:#455762;line-height:1.6}.suggestion:hover{border-color:#94b6a7;background:#f5faf7}.suggestion small{display:block;color:var(--muted);margin-top:6px}
+.message{margin-bottom:30px}.message.user{margin-left:auto;max-width:85%;background:#edf1f3;padding:13px 18px;border-radius:14px 14px 3px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.assistant-label{display:flex;gap:9px;align-items:center;font-size:.875rem;font-weight:650;margin-bottom:14px}.assistant-label .mark{width:24px;height:24px;border-radius:6px;font-size:15px}.answer{line-height:1.9;overflow-wrap:anywhere}.answer h2,.answer h3{font-size:1.1rem;margin:24px 0 10px}.answer p{margin:8px 0}.answer ul{padding-left:22px}.answer pre{overflow:auto;background:#eef2f4;border:1px solid var(--line);padding:16px;border-radius:8px;line-height:1.6;font-size:.85rem}.answer code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf1f3;border-radius:3px;padding:1px 4px;font-size:.85em}.answer pre code{padding:0;background:none;font-size:inherit}
+.progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}
+details{border-left:2px solid #dde6e2;padding-left:13px;margin:16px 0;font-size:.8rem;color:#75847e}summary{cursor:pointer}details ul{list-style:none;padding:0;line-height:2}.error{color:#a13a3a;background:#fff0ef;border-radius:8px;padding:12px;white-space:pre-wrap}
+.composer-wrap{padding:12px 32px 19px;background:linear-gradient(transparent,#fafbfc 14%);flex-shrink:0}.composer{max-width:848px;margin:auto;background:white;border:1px solid #cfd9dd;border-radius:14px;box-shadow:0 5px 22px #233a4a07;padding:15px 16px 11px}.composer textarea{width:100%;min-height:56px;max-height:160px;border:0;outline:none;resize:vertical;color:#23313b;line-height:1.7;background:transparent}.composer-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}.composer-footer span{font-size:.75rem;color:var(--muted)}.send{border:0;background:#173b32;color:white;border-radius:8px;padding:8px 16px;font-size:.875rem}.footnote{text-align:center;font-size:.75rem;color:#88969e;margin-top:9px}.notice{font-size:.875rem;color:#934c22;margin:12px 0}.hidden,[hidden]{display:none!important}
+dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;padding:25px;color:#23313b;box-shadow:0 30px 100px #183b3c30}dialog::backdrop{background:#172c3b55;backdrop-filter:blur(3px)}.dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}.dialog-head h2{font-size:1.125rem;margin:0}.path-row{display:flex;gap:8px}.path-row input{flex:1;min-width:0;border:1px solid #d2dce0;border-radius:7px;padding:9px 10px;font-size:.8rem}.folder-list{height:280px;overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px}.folder{display:block;background:white;border:0;border-bottom:1px solid #f0f3f5;padding:12px 15px;width:100%;text-align:left;font-size:.875rem;color:#36505b}.folder:hover{background:#eef5f2}.folder::before{content:"▱";color:#529478;font-size:1.1rem;margin-right:12px}.dialog-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px}.dialog-bottom small{font-size:.75rem;color:var(--muted)}.empty-list{padding:24px;color:var(--muted);font-size:.875rem}
+@media(max-width:760px){.app{grid-template-columns:190px minmax(0,1fr)}.sidebar{padding:20px 10px}.topbar{padding:0 18px}.conversation{padding:20px}.welcome{padding-top:40px}h1{font-size:1.5rem}.suggestions{grid-template-columns:1fr}.composer-wrap{padding:12px 16px}.footnote{line-height:1.6}}
+@media(max-width:520px){.app{display:flex;flex-direction:column;height:100dvh}.sidebar{padding:12px;flex-direction:row;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.brand{padding:0;font-size:0}.sidebar-bottom,.caption{display:none}.project-section{flex:1;min-width:0}.projects{display:flex;max-height:68px}.project{min-width:140px}.open-button{font-size:.8rem;padding:8px}.topbar{height:62px}main{height:auto;flex:1;min-height:0}.welcome{padding-top:16px}.welcome .mark{display:none}.dialog-bottom{align-items:flex-end}.composer-footer span{max-width:65%;line-height:1.6}}
+</style>
+</head>
+<body>
+<div class="app">
+ <aside class="sidebar">
+  <div class="brand"><span class="mark">H</span>HERMES</div>
+  <button class="open-button" id="open-project"><span>＋</span> 打开项目</button>
+  <section class="project-section"><p class="caption">项目</p><div class="projects" id="projects"></div></section>
+  <div class="sidebar-bottom"><span class="pill">本地工作区</span><br>代码审查 Agent<br>由你配置的模型提供回答</div>
+ </aside>
+ <main>
+  <header class="topbar"><div><div class="breadcrumb">工作区 / 代码审查</div><div class="title" id="project-title">选择一个项目开始</div></div><button class="text-button" id="new-chat">新对话 ＋</button></header>
+  <div class="scroll" id="scroll"><div class="conversation" id="conversation">
+   <section class="welcome" id="welcome"><div class="mark">H</div><h1>一起看看代码里的问题。</h1><p>选择本机项目，用一句话告诉 Hermes 你想检查什么。<br>Agent 会搜索并阅读相关源码，给出问题位置与修改建议。</p>
+    <div class="suggestions"><button class="suggestion" data-question="帮我审查这个项目，找出可能导致运行失败的 bug，并说明文件、行号和触发条件。">检查潜在 bug<small>异常、边界条件与错误处理</small></button><button class="suggestion" data-question="检查这个项目的权限校验和输入处理，指出有代码证据的安全问题。">检查安全问题<small>权限、输入校验与数据暴露</small></button></div>
+   </section><div id="messages"></div>
+  </div></div>
+  <div class="composer-wrap"><form class="composer" id="chat-form"><label for="question" class="hidden">审查问题</label><textarea id="question" placeholder="例如：帮我检查登录逻辑有哪些 bug…" aria-label="审查问题"></textarea><div class="composer-footer"><span id="composer-note">先打开一个项目</span><button class="send" id="send" disabled>发送 ↑</button></div><div id="notice" class="notice" role="alert" hidden></div></form><div class="footnote">点击发送后，相关代码片段会发送至你在 .env 中配置的模型服务。仅做只读分析。</div></div>
+ </main>
+</div>
+<dialog id="picker" aria-labelledby="picker-title"><div class="dialog-head"><h2 id="picker-title">打开本机项目</h2><button class="text-button" id="close-picker" aria-label="关闭选择器">✕</button></div>
+ <div class="path-row"><button class="text-button" id="up-directory" aria-label="上一级">↑</button><input id="directory-path" aria-label="当前文件夹路径" placeholder="文件夹路径"><button class="text-button" id="go-directory">前往</button></div>
+ <div class="folder-list" id="folders"></div><div class="notice" id="picker-error" role="alert" hidden></div>
+ <div class="dialog-bottom"><small>进入项目文件夹，再点击右侧按钮。<br>只会读取你选中的项目源码。</small><button class="send" id="select-directory">选择此项目</button></div>
+</dialog>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const token = document.querySelector('meta[name="hermes-token"]').content;
+const state = {projects:[], selected:null, chats:new Map(), directory:null, polling:false};
+function element(tag, cls, text) { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; }
+async function api(path, body) {
+ const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'X-Hermes-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+ const data=await r.json(); if(!r.ok)throw new Error(data.error||'请求失败'); return data;
+}
+function notice(text) {$('notice').textContent=text||'';$('notice').hidden=!text;}
+function chat(id=state.selected?.id) { if(!state.chats.has(id))state.chats.set(id,{turns:[],parent:null,busy:false,draft:''});return state.chats.get(id); }
+function renderProjects() {
+ $('projects').replaceChildren();
+ for(const p of state.projects){const b=element('button','project'+(state.selected?.id===p.id?' active':''));b.append(element('span','project-name',p.name),element('span','project-path',p.path));b.title=p.path;b.onclick=()=>selectProject(p);$('projects').append(b);}
+}
+function selectProject(project) {if(state.selected)chat().draft=$('question').value;state.selected=project;$('question').value=chat().draft;notice('');renderProjects();renderChat();}
+function renderMarkdown(container, text) {
+ // 通过文本节点渲染 Markdown 子集，模型输出的 HTML 永远不被执行。
+ container.replaceChildren();let code=null,list=null;
+ for(const line of text.split('\n')) {
+  if(line.startsWith('```')){if(code){code=null;}else{const pre=element('pre');code=element('code');pre.append(code);container.append(pre);}list=null;continue;}
+  if(code){code.append(document.createTextNode(line+'\n'));continue;}
+  if(!line.trim()){list=null;continue;}
+  const heading=line.match(/^#{1,6}\s+(.*)$/);const bullet=line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);let node,content;
+  if(heading){node=element('h3');content=heading[1];list=null;}
+  else if(bullet){if(!list){list=element('ul');container.append(list);}node=element('li');content=bullet[1];}
+  else{node=element('p');content=line;list=null;}
+  for(const part of content.split(/(`[^`]+`|\*\*[^*]+\*\*)/g)){if(part.startsWith('`')&&part.endsWith('`'))node.append(element('code','',part.slice(1,-1)));else if(part.startsWith('**')&&part.endsWith('**'))node.append(element('strong','',part.slice(2,-2)));else node.append(document.createTextNode(part));}
+  if(bullet)list.append(node);else container.append(node);
+ }
+}
+function renderChat() {
+ const c=chat();$('project-title').textContent=state.selected?.name||'选择一个项目开始';$('welcome').hidden=!!c.turns.length;$('messages').replaceChildren();
+ for(const turn of c.turns) {
+  $('messages').append(element('div','message user',turn.question));
+  const box=element('article','message assistant');const label=element('div','assistant-label');label.append(element('span','mark','H'),document.createTextNode('Hermes'));box.append(label);
+  if(turn.events?.length){const detail=element('details');detail.append(element('summary','', '查看检查过程 · '+turn.events.length+' 条记录'));const ul=element('ul');for(const e of turn.events)ul.append(element('li','',e.message));detail.append(ul);box.append(detail);}
+  if(turn.answer){const answer=element('div','answer');renderMarkdown(answer,turn.answer);box.append(answer);}
+  else if(turn.error)box.append(element('div','error',turn.error));
+  else box.append(element('div','progress active',turn.events?.at(-1)?.message||'正在连接模型…'));
+  $('messages').append(box);
+ }
+ $('send').disabled=!state.selected||c.busy;$('send').textContent=c.busy?'审查中…':'发送 ↑';
+ $('new-chat').disabled=c.busy;$('composer-note').textContent=!state.selected?'先打开一个项目':c.busy?'Agent 正在检查相关代码':'只读审查 · Enter 发送，Shift + Enter 换行';
+}
+async function browse(path) {
+ $('picker-error').hidden=true;$('select-directory').disabled=true;
+ try {const data=await api('/api/directories'+(path?'?path='+encodeURIComponent(path):''));state.directory=data;$('directory-path').value=data.path;$('folders').replaceChildren();$('up-directory').disabled=data.path===data.parent;
+  for(const d of data.directories){const b=element('button','folder',d.name);b.onclick=()=>browse(d.path);$('folders').append(b);}
+  if(!data.directories.length)$('folders').append(element('div','empty-list','这里没有子文件夹，可以直接选择当前目录。'));
+  $('select-directory').disabled=false;
+ }catch(e){state.directory=null;$('picker-error').textContent=e.message;$('picker-error').hidden=false;}
+}
+$('open-project').onclick=()=>{$('picker').showModal();browse(state.selected?.path);};
+$('close-picker').onclick=()=>$('picker').close();
+$('go-directory').onclick=()=>browse($('directory-path').value);
+$('directory-path').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();browse(e.target.value);}};
+$('up-directory').onclick=()=>{if(state.directory)browse(state.directory.parent);};
+$('select-directory').onclick=async()=>{
+ if(!state.directory)return;$('select-directory').disabled=true;
+ try{const p=await api('/api/projects',{path:state.directory.path});if(!state.projects.some(x=>x.id===p.id))state.projects.push(p);selectProject(p);$('picker').close();$('question').focus();}
+ catch(e){$('picker-error').textContent=e.message;$('picker-error').hidden=false;}
+ finally{$('select-directory').disabled=false;}
+};
+$('new-chat').onclick=()=>{if(state.selected&&!chat().busy){state.chats.set(state.selected.id,{turns:[],parent:null,busy:false,draft:''});$('question').value='';notice('');renderChat();}};
+document.querySelectorAll('[data-question]').forEach(b=>b.onclick=()=>{$('question').value=b.dataset.question;$('question').focus();});
+$('question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('chat-form').requestSubmit();}};
+async function monitor(projectId, turn) {
+ const c=chat(projectId);
+ try {
+  const job=await api('/api/reviews/'+turn.id);turn.events=job.events;
+  if(job.status==='completed'){turn.answer=job.answer;c.parent=job.id;c.busy=false;}
+  else if(job.status==='failed'){turn.error=job.message;c.busy=false;}
+  if(state.selected?.id===projectId)renderChat();
+  if(c.busy)setTimeout(()=>monitor(projectId,turn),1200);
+ }catch(e){turn.error='读取状态失败：'+e.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
+}
+$('chat-form').onsubmit=async e=>{
+ e.preventDefault();if(!state.selected)return notice('请先打开项目。');const c=chat();if(c.busy)return;
+ const question=$('question').value.trim();if(!question)return notice('请输入想检查的问题。');if(question.length>4000)return notice('问题请控制在 4000 字以内。');
+ const projectId=state.selected.id;const turn={question,events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
+ try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent});turn.id=data.id;monitor(projectId,turn);}
+ catch(error){turn.error=error.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
+};
+api('/api/projects').then(data=>{state.projects=data.projects;if(state.projects.length)selectProject(state.projects[0]);else renderChat();renderProjects();}).catch(e=>notice(e.message));
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "system_metrics": {"cpu_percent": 20, "memory_used_percent": 48, "disk_used_percent": 38, "load_average": [0.5, 0.5, 0.4]},
+  "gpu_metrics": {"gpu": "NVIDIA A100 80GB", "gpu_utilization": 3, "memory_used_mb": 2100, "memory_total_mb": 81920},
+  "docker_list": [{"name": "legal-agent", "status": "running", "cpu": "4%", "memory": "1.2GB"}],
+  "service_health": {"status_code": 500, "latency_ms": 52},
+  "docker_logs": {"lines": ["ERROR missing required environment variable MODEL_ENDPOINT"]},
+  "git_recent_changes": {"summary": "No correlated deploy found.", "commits": []},
+  "config_diff": {"path": "reranker/config.yaml", "changes": []}
+}
