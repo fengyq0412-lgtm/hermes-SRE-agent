@@ -1,11 +1,17 @@
 """本地项目选择与代码问答服务；密钥只保存在服务端。"""
 
 import copy
+import errno
 import hashlib
 import json
 import os
 import secrets
+import shlex
+import signal
+import subprocess
+import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +24,92 @@ from .model_client import ModelConfig, ModelConfigurationError, ModelRequestErro
 
 
 MAX_REQUEST_BYTES = 16_384
+RESTART_WAIT_SECONDS = 5
+
+
+def restartable_listener(port):
+    """只识别同一用户、同一 hermes-web 启动脚本占用的端口。"""
+    try:
+        result = subprocess.run(
+            ["lsof", "-nP", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        pids = {int(line) for line in result.stdout.splitlines() if line.isdecimal()}
+        if result.returncode != 0 or len(pids) != 1:
+            return None
+        pid = pids.pop()
+        if pid == os.getpid():
+            return None
+        process = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "uid=", "-o", "command="],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+        if process.returncode != 0:
+            return None
+        uid, command = process.stdout.strip().split(None, 1)
+        if int(uid) != os.getuid():
+            return None
+        script = Path(sys.argv[0]).resolve()
+        if script.name != "hermes-web":
+            return None
+        arguments = shlex.split(command)
+        if not any(Path(argument).is_absolute() and Path(argument).resolve() == script
+                   for argument in arguments):
+            return None
+        return pid
+    except (OSError, ValueError, IndexError, subprocess.TimeoutExpired):
+        return None
+
+
+def bind_web_server(port):
+    """端口被旧 Hermes 占用时先停止旧实例，再等待端口释放。"""
+    try:
+        return ThreadingHTTPServer(("127.0.0.1", port), HermesRequestHandler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+    old_pid = restartable_listener(port)
+    if old_pid is None or restartable_listener(port) != old_pid:
+        raise SystemExit(
+            f"端口 {port} 已被占用，且无法确认占用者是同一 hermes-web。"
+            "请检查占用进程，或修改 .env 中的 HERMES_WEB_PORT。"
+        )
+    print(f"检测到旧 Hermes 进程 {old_pid}，正在重启…", flush=True)
+    try:
+        os.kill(old_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError as exc:
+        raise SystemExit(f"无法停止旧 Hermes 进程 {old_pid}：{exc}") from None
+    deadline = time.monotonic() + RESTART_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", port), HermesRequestHandler)
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            time.sleep(.1)
+    raise SystemExit(f"旧 Hermes 进程已收到停止信号，但端口 {port} 在 {RESTART_WAIT_SECONDS} 秒内未释放。")
+
+
+def empty_usage():
+    return {"requests": 0, "reported_requests": 0, "unreported_requests": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+
+class MeteredClient:
+    """逐次记录模型调用；没有 usage 的响应单独计数。"""
+
+    def __init__(self, client, on_usage):
+        self.client = client
+        self.on_usage = on_usage
+
+    def complete(self, messages):
+        # 每个审查任务拥有独立客户端，避免并发任务的用量互相覆盖。
+        try:
+            return self.client.complete(messages)
+        finally:
+            self.on_usage(getattr(self.client, "last_usage", None))
 
 
 class ProjectRegistry:
@@ -92,6 +184,7 @@ class ReviewJobs:
         self.registry = registry
         self.jobs = {}
         self.lock = threading.Lock()
+        self.total_usage = empty_usage()
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hermes-review")
         self.client_factory = client_factory or (lambda: OpenAICompatibleClient(ModelConfig.from_environment()))
 
@@ -114,7 +207,7 @@ class ReviewJobs:
                 history = history[-6:]
             job_id = uuid4().hex
             self.jobs[job_id] = {"id": job_id, "project_id": project_id, "question": question.strip(),
-                                 "status": "queued", "events": [], "history": history}
+                                 "status": "queued", "events": [], "history": history, "usage": empty_usage()}
         self.executor.submit(self._run, job_id, project, question.strip(), history)
         return {"id": job_id}
 
@@ -122,7 +215,8 @@ class ReviewJobs:
         with self.lock:
             if job_id not in self.jobs:
                 raise KeyError("问答任务不存在。")
-            return copy.deepcopy({k: v for k, v in self.jobs[job_id].items() if k != "history"})
+            job = {k: v for k, v in self.jobs[job_id].items() if k != "history"}
+            return copy.deepcopy({**job, "session_usage": self.total_usage})
 
     def _update(self, job_id, **values):
         with self.lock:
@@ -132,10 +226,26 @@ class ReviewJobs:
         with self.lock:
             self.jobs[job_id]["events"].append(event)
 
+    def _record_usage(self, job_id, usage):
+        valid = (isinstance(usage, dict) and all(type(usage.get(key)) is int and usage[key] >= 0
+                 for key in ("prompt_tokens", "completion_tokens", "total_tokens")))
+        with self.lock:
+            for counter in (self.jobs[job_id]["usage"], self.total_usage):
+                counter["requests"] += 1
+                counter["reported_requests" if valid else "unreported_requests"] += 1
+                if valid:
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                        counter[key] += usage[key]
+
+    def get_usage(self):
+        with self.lock:
+            return copy.deepcopy(self.total_usage)
+
     def _run(self, job_id, project, question, history):
         self._update(job_id, status="running")
         try:
-            result = CodeReviewAgent(project, self.client_factory(), lambda e: self._event(job_id, e)).run(question, history)
+            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage))
+            result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e)).run(question, history)
             self._update(job_id, status="completed", answer=result["answer"], steps=result["steps"])
         except ModelConfigurationError:
             self._update(job_id, status="failed", message="请在 Hermes 的 .env 中填写有效的 HERMES_BASE_URL、HERMES_API_KEY 和 HERMES_MODEL，然后重启服务。")
@@ -176,6 +286,8 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {"projects": self.registry.list_public()})
             elif parsed.path == "/api/directories":
                 self._send_json(200, browse_directories(parse_qs(parsed.query).get("path", [None])[0]))
+            elif parsed.path == "/api/usage":
+                self._send_json(200, self.jobs.get_usage())
             elif parsed.path.startswith("/api/reviews/"):
                 self._send_json(200, self.jobs.get(parsed.path.rsplit("/", 1)[-1]))
             else:
@@ -229,15 +341,21 @@ def main():
     load_dotenv()
     port = int(os.environ.get("HERMES_WEB_PORT", "8765"))
     HermesRequestHandler.registry = ProjectRegistry(storage=Path.cwd() / ".hermes" / "projects.json")
+    server = bind_web_server(port)
     HermesRequestHandler.jobs = ReviewJobs(HermesRequestHandler.registry)
-    server = ThreadingHTTPServer(("127.0.0.1", port), HermesRequestHandler)
     print(f"Hermes 控制台：http://127.0.0.1:{port}", flush=True)
     print("在页面点击「打开项目」选择文件夹；模型配置读取当前目录 .env。", flush=True)
+    def stop_on_term(_signum, _frame):
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, stop_on_term)
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n控制台已停止。")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\n控制台已停止。")
     finally:
+        signal.signal(signal.SIGTERM, previous_handler)
         server.server_close()
         HermesRequestHandler.jobs.executor.shutdown(wait=False, cancel_futures=True)
     return 0

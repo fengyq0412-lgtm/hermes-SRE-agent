@@ -48,8 +48,25 @@ class OpenAICompatibleClient:
 
     def __init__(self, config: ModelConfig):
         self.config = config
+        self.last_usage = None
+
+    @staticmethod
+    def _parse_usage(data):
+        """仅接受供应商实际返回的非负整数用量，不估算字符数。"""
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return None
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+        total = usage.get("total_tokens")
+        if not all(type(value) is int and value >= 0 for value in (prompt, completion)):
+            return None
+        if type(total) is not int or total < 0:
+            total = prompt + completion
+        return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
 
     def complete(self, messages: List[Dict[str, str]]) -> str:
+        self.last_usage = None
         payload = json.dumps({
             "model": self.config.model,
             "messages": messages,
@@ -74,6 +91,9 @@ class OpenAICompatibleClient:
             raise ModelRequestError(f"模型服务返回 HTTP {status}，请检查 .env 中的地址、模型名、密钥或服务额度。") from exc
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise ModelRequestError(f"模型请求失败：{exc}") from exc
+        if not isinstance(data, dict):
+            raise ModelRequestError("模型响应不符合 OpenAI Chat Completions 格式。")
+        self.last_usage = self._parse_usage(data)
         try:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:

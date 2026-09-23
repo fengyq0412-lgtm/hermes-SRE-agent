@@ -17,11 +17,12 @@ main{min-width:0;display:flex;flex-direction:column;height:100dvh}.topbar{height
 .scroll{flex:1;overflow:auto;scroll-behavior:smooth}.conversation{max-width:920px;margin:auto;padding:30px 36px 50px}.welcome{padding:70px 0 38px;max-width:690px;margin:auto}.welcome .mark{width:48px;height:48px;font-size:30px;margin-bottom:26px}h1{font-size:2rem;letter-spacing:-.04em;font-weight:630;margin:0 0 13px}.welcome p{color:var(--muted);line-height:1.9;margin:0 0 28px}.suggestions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.suggestion{text-align:left;border:1px solid var(--line);border-radius:10px;padding:17px;background:white;font-size:.875rem;color:#455762;line-height:1.6}.suggestion:hover{border-color:#94b6a7;background:#f5faf7}.suggestion small{display:block;color:var(--muted);margin-top:6px}
 .message{margin-bottom:30px}.message.user{margin-left:auto;max-width:85%;background:#edf1f3;padding:13px 18px;border-radius:14px 14px 3px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.assistant-label{display:flex;gap:9px;align-items:center;font-size:.875rem;font-weight:650;margin-bottom:14px}.assistant-label .mark{width:24px;height:24px;border-radius:6px;font-size:15px}.answer{line-height:1.9;overflow-wrap:anywhere}.answer h2,.answer h3{font-size:1.1rem;margin:24px 0 10px}.answer p{margin:8px 0}.answer ul{padding-left:22px}.answer pre{overflow:auto;background:#eef2f4;border:1px solid var(--line);padding:16px;border-radius:8px;line-height:1.6;font-size:.85rem}.answer code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf1f3;border-radius:3px;padding:1px 4px;font-size:.85em}.answer pre code{padding:0;background:none;font-size:inherit}
 .progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}
+.usage{font-size:.76rem;color:#60746e;margin:12px 0;line-height:1.7}.usage strong{color:#315e50}.top-actions{display:flex;align-items:center;gap:15px}.session-usage{font-size:.76rem;color:#60746e;white-space:nowrap}
 details{border-left:2px solid #dde6e2;padding-left:13px;margin:16px 0;font-size:.8rem;color:#75847e}summary{cursor:pointer}details ul{list-style:none;padding:0;line-height:2}.error{color:#a13a3a;background:#fff0ef;border-radius:8px;padding:12px;white-space:pre-wrap}
 .composer-wrap{padding:12px 32px 19px;background:linear-gradient(transparent,#fafbfc 14%);flex-shrink:0}.composer{max-width:848px;margin:auto;background:white;border:1px solid #cfd9dd;border-radius:14px;box-shadow:0 5px 22px #233a4a07;padding:15px 16px 11px}.composer textarea{width:100%;min-height:56px;max-height:160px;border:0;outline:none;resize:vertical;color:#23313b;line-height:1.7;background:transparent}.composer-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}.composer-footer span{font-size:.75rem;color:var(--muted)}.send{border:0;background:#173b32;color:white;border-radius:8px;padding:8px 16px;font-size:.875rem}.footnote{text-align:center;font-size:.75rem;color:#88969e;margin-top:9px}.notice{font-size:.875rem;color:#934c22;margin:12px 0}.hidden,[hidden]{display:none!important}
 dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;padding:25px;color:#23313b;box-shadow:0 30px 100px #183b3c30}dialog::backdrop{background:#172c3b55;backdrop-filter:blur(3px)}.dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}.dialog-head h2{font-size:1.125rem;margin:0}.path-row{display:flex;gap:8px}.path-row input{flex:1;min-width:0;border:1px solid #d2dce0;border-radius:7px;padding:9px 10px;font-size:.8rem}.folder-list{height:280px;overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px}.folder{display:block;background:white;border:0;border-bottom:1px solid #f0f3f5;padding:12px 15px;width:100%;text-align:left;font-size:.875rem;color:#36505b}.folder:hover{background:#eef5f2}.folder::before{content:"▱";color:#529478;font-size:1.1rem;margin-right:12px}.dialog-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px}.dialog-bottom small{font-size:.75rem;color:var(--muted)}.empty-list{padding:24px;color:var(--muted);font-size:.875rem}
 @media(max-width:760px){.app{grid-template-columns:190px minmax(0,1fr)}.sidebar{padding:20px 10px}.topbar{padding:0 18px}.conversation{padding:20px}.welcome{padding-top:40px}h1{font-size:1.5rem}.suggestions{grid-template-columns:1fr}.composer-wrap{padding:12px 16px}.footnote{line-height:1.6}}
-@media(max-width:520px){.app{display:flex;flex-direction:column;height:100dvh}.sidebar{padding:12px;flex-direction:row;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.brand{padding:0;font-size:0}.sidebar-bottom,.caption{display:none}.project-section{flex:1;min-width:0}.projects{display:flex;max-height:68px}.project{min-width:140px}.open-button{font-size:.8rem;padding:8px}.topbar{height:62px}main{height:auto;flex:1;min-height:0}.welcome{padding-top:16px}.welcome .mark{display:none}.dialog-bottom{align-items:flex-end}.composer-footer span{max-width:65%;line-height:1.6}}
+@media(max-width:520px){.app{display:flex;flex-direction:column;height:100dvh}.sidebar{padding:12px;flex-direction:row;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.brand{padding:0;font-size:0}.sidebar-bottom,.caption{display:none}.project-section{flex:1;min-width:0}.projects{display:flex;max-height:68px}.project{min-width:140px}.open-button{font-size:.8rem;padding:8px}.topbar{height:62px}main{height:auto;flex:1;min-height:0}.welcome{padding-top:16px}.welcome .mark{display:none}.dialog-bottom{align-items:flex-end}.composer-footer span{max-width:65%;line-height:1.6}.top-actions{gap:7px}.session-usage{max-width:85px;white-space:normal;line-height:1.2}}
 </style>
 </head>
 <body>
@@ -33,7 +34,7 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
   <div class="sidebar-bottom"><span class="pill">本地工作区</span><br>代码审查 Agent<br>由你配置的模型提供回答</div>
  </aside>
  <main>
-  <header class="topbar"><div><div class="breadcrumb">工作区 / 代码审查</div><div class="title" id="project-title">选择一个项目开始</div></div><button class="text-button" id="new-chat">新对话 ＋</button></header>
+  <header class="topbar"><div><div class="breadcrumb">工作区 / 代码审查</div><div class="title" id="project-title">选择一个项目开始</div></div><div class="top-actions"><span class="session-usage" id="session-usage" title="当前服务启动以来，由模型接口上报的 token 用量">本次服务累计 0 token</span><button class="text-button" id="new-chat">新对话 ＋</button></div></header>
   <div class="scroll" id="scroll"><div class="conversation" id="conversation">
    <section class="welcome" id="welcome"><div class="mark">H</div><h1>一起看看代码里的问题。</h1><p>选择本机项目，用一句话告诉 Hermes 你想检查什么。<br>Agent 会搜索并阅读相关源码，给出问题位置与修改建议。</p>
     <div class="suggestions"><button class="suggestion" data-question="帮我审查这个项目，找出可能导致运行失败的 bug，并说明文件、行号和触发条件。">检查潜在 bug<small>异常、边界条件与错误处理</small></button><button class="suggestion" data-question="检查这个项目的权限校验和输入处理，指出有代码证据的安全问题。">检查安全问题<small>权限、输入校验与数据暴露</small></button></div>
@@ -51,13 +52,26 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
 'use strict';
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="hermes-token"]').content;
-const state = {projects:[], selected:null, chats:new Map(), directory:null, polling:false};
+const state = {projects:[], selected:null, chats:new Map(), directory:null, polling:false, usage:null};
 function element(tag, cls, text) { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; }
 async function api(path, body) {
  const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'X-Hermes-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  const data=await r.json(); if(!r.ok)throw new Error(data.error||'请求失败'); return data;
 }
 function notice(text) {$('notice').textContent=text||'';$('notice').hidden=!text;}
+function usageText(usage, prefix) {
+ if(!usage)return '';
+ const fmt=n=>Number(n||0).toLocaleString('zh-CN');
+ let text=usage.reported_requests?(prefix+(usage.unreported_requests?'（已上报部分）':'')+'：输入 '+fmt(usage.prompt_tokens)+' · 输出 '+fmt(usage.completion_tokens)+' · 合计 '+fmt(usage.total_tokens)+' token'):(prefix+'：token 用量未知');
+ if(usage.unreported_requests)text+=' · '+fmt(usage.unreported_requests)+' 次调用未上报用量';
+ return text;
+}
+function sessionUsageText(usage) {
+ if(!usage)return '累计用量加载中…';
+ let text=usage.reported_requests?(usage.unreported_requests?'已上报累计 ':'累计 ')+Number(usage.total_tokens||0).toLocaleString('zh-CN')+' token':'token 用量未知';
+ if(usage.unreported_requests)text+='（'+usage.unreported_requests+' 次未上报）';
+ return text;
+}
 function chat(id=state.selected?.id) { if(!state.chats.has(id))state.chats.set(id,{turns:[],parent:null,busy:false,draft:''});return state.chats.get(id); }
 function renderProjects() {
  $('projects').replaceChildren();
@@ -81,6 +95,8 @@ function renderMarkdown(container, text) {
 }
 function renderChat() {
  const c=chat();$('project-title').textContent=state.selected?.name||'选择一个项目开始';$('welcome').hidden=!!c.turns.length;$('messages').replaceChildren();
+ $('session-usage').textContent=sessionUsageText(state.usage);
+ if(state.usage)$('session-usage').title=usageText(state.usage,'本次服务累计');
  for(const turn of c.turns) {
   $('messages').append(element('div','message user',turn.question));
   const box=element('article','message assistant');const label=element('div','assistant-label');label.append(element('span','mark','H'),document.createTextNode('Hermes'));box.append(label);
@@ -88,6 +104,7 @@ function renderChat() {
   if(turn.answer){const answer=element('div','answer');renderMarkdown(answer,turn.answer);box.append(answer);}
   else if(turn.error)box.append(element('div','error',turn.error));
   else box.append(element('div','progress active',turn.events?.at(-1)?.message||'正在连接模型…'));
+  if(turn.usage?.requests)box.append(element('div','usage',usageText(turn.usage,'本次审查')));
   $('messages').append(box);
  }
  $('send').disabled=!state.selected||c.busy;$('send').textContent=c.busy?'审查中…':'发送 ↑';
@@ -118,7 +135,7 @@ $('question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.p
 async function monitor(projectId, turn) {
  const c=chat(projectId);
  try {
-  const job=await api('/api/reviews/'+turn.id);turn.events=job.events;
+  const job=await api('/api/reviews/'+turn.id);turn.events=job.events;turn.usage=job.usage;state.usage=job.session_usage;
   if(job.status==='completed'){turn.answer=job.answer;c.parent=job.id;c.busy=false;}
   else if(job.status==='failed'){turn.error=job.message;c.busy=false;}
   if(state.selected?.id===projectId)renderChat();
@@ -133,6 +150,7 @@ $('chat-form').onsubmit=async e=>{
  catch(error){turn.error=error.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
 };
 api('/api/projects').then(data=>{state.projects=data.projects;if(state.projects.length)selectProject(state.projects[0]);else renderChat();renderProjects();}).catch(e=>notice(e.message));
+api('/api/usage').then(data=>{state.usage=data;renderChat();}).catch(()=>{$('session-usage').textContent='累计用量暂不可用';});
 </script>
 </body>
 </html>

@@ -53,7 +53,48 @@ class CodeReviewTests(unittest.TestCase):
         result = CodeReviewAgent(self.root, client, events.append).run("有哪些 bug？")
         self.assertIn("main.py:2", result["answer"])
         self.assertEqual(len(result["steps"]), 2)
-        self.assertTrue(any("read_file 完成" in e["message"] for e in events))
+        self.assertTrue(any("已读取 main.py" in e["message"] for e in events))
+        self.assertIn("总体风险", result["answer"])
+
+    def test_outline_locates_python_functions_without_reading_entire_file(self):
+        outline = self.tools.file_outline("main.py")
+        self.assertEqual(outline["symbols"][0]["name"], "divide")
+        self.assertEqual(outline["symbols"][0]["line"], 1)
+        self.assertEqual(outline["symbols"][0]["end_line"], 2)
+
+    def test_tool_budget_still_allows_a_final_synthesis_call(self):
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "list_files", "arguments": {}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "final", "answer": "总体风险：中。main.py:2 在 x=0 时抛出异常。"},
+        ])
+        events = []
+        result = CodeReviewAgent(self.root, client, events.append, max_tool_calls=2).run("检查")
+        self.assertEqual(len(result["steps"]), 2)
+        self.assertIn("总体风险：中", result["answer"])
+        self.assertTrue(any("评估风险" in event["message"] for event in events))
+
+    def test_synthesis_retries_if_model_requests_another_tool(self):
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "search_code", "arguments": {"text": "divide"}},
+            {"type": "final", "answer": "总体风险：待评估。已读取 main.py。"},
+        ])
+        result = CodeReviewAgent(self.root, client, max_tool_calls=1).run("检查")
+        self.assertEqual(len(result["steps"]), 1)
+        self.assertIn("待评估", result["answer"])
+
+    def test_noncompliant_model_returns_scope_limited_report(self):
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+        ])
+        result = CodeReviewAgent(self.root, client, max_tool_calls=1).run("检查")
+        self.assertEqual(len(result["steps"]), 1)
+        self.assertIn("待评估", result["answer"])
+        self.assertIn("`main.py`", result["answer"])
 
     def test_invalid_arguments_do_not_crash_agent_and_can_be_corrected(self):
         client = ScriptedClient([
@@ -66,7 +107,7 @@ class CodeReviewTests(unittest.TestCase):
         self.assertIn("main.py:2", result["answer"])
 
     def test_agent_cannot_finish_without_reading_any_source(self):
-        client = ScriptedClient([{"type": "final", "answer": "代码没有 bug。"}] * 12)
+        client = ScriptedClient([{"type": "final", "answer": "代码没有 bug。"}] * 14)
         with self.assertRaises(ModelRequestError):
             CodeReviewAgent(self.root, client).run("检查")
 
