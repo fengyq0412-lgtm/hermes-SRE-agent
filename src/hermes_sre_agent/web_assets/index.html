@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="hermes-token" content="__HERMES_TOKEN__">
-<title>Hermes · 代码审查</title>
+<title>Hermes · 项目 Agent</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23142738'/%3E%3Cpath d='M10 8v16m12-16v16M10 16h12' stroke='%235fe0bf' stroke-width='3'/%3E%3C/svg%3E">
 <style>
 :root{font-family:Inter,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#23313b;background:#fafbfc;font-size:16px;--line:#e3e8ec;--muted:#73818b;--accent:#166953}
@@ -18,7 +18,10 @@ main{min-width:0;display:flex;flex-direction:column;height:100dvh}.topbar{height
 .message{margin-bottom:30px}.message.user{margin-left:auto;max-width:85%;background:#edf1f3;padding:13px 18px;border-radius:14px 14px 3px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.assistant-label{display:flex;gap:9px;align-items:center;font-size:.875rem;font-weight:650;margin-bottom:14px}.assistant-label .mark{width:24px;height:24px;border-radius:6px;font-size:15px}.answer{line-height:1.9;overflow-wrap:anywhere}.answer h2,.answer h3{font-size:1.1rem;margin:24px 0 10px}.answer p{margin:8px 0}.answer ul{padding-left:22px}.answer pre{overflow:auto;background:#eef2f4;border:1px solid var(--line);padding:16px;border-radius:8px;line-height:1.6;font-size:.85rem}.answer code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf1f3;border-radius:3px;padding:1px 4px;font-size:.85em}.answer pre code{padding:0;background:none;font-size:inherit}
 .progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}
 .usage{font-size:.76rem;color:#60746e;margin:12px 0;line-height:1.7}.usage strong{color:#315e50}.top-actions{display:flex;align-items:center;gap:15px}.session-usage{font-size:.76rem;color:#60746e;white-space:nowrap}
+.message details pre{overflow:auto;max-height:420px;background:#eef2f4;padding:12px;color:#344752;border-radius:8px;white-space:pre}.message .send+.text-button{margin-left:10px}
+.approval-dialog{width:min(760px,94vw);max-height:86dvh;overflow:auto}.approval-dialog pre{overflow:auto;max-height:300px;background:#eef2f4;padding:14px;border-radius:8px;font-size:.78rem}.approval-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.approval-dialog p{line-height:1.7}
 details{border-left:2px solid #dde6e2;padding-left:13px;margin:16px 0;font-size:.8rem;color:#75847e}summary{cursor:pointer}details ul{list-style:none;padding:0;line-height:2}.error{color:#a13a3a;background:#fff0ef;border-radius:8px;padding:12px;white-space:pre-wrap}
+.trace-list{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}.trace-item{border:1px solid #e0e9e5;background:#f8fbf9;border-radius:8px;padding:10px 12px;color:#314b43}.trace-head{font-weight:600}.trace-meta{display:block;color:#71857b;font-size:.75rem;margin:3px 0}.trace-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#536a60;font-size:.74rem}.trace-path{overflow-wrap:anywhere;color:#61786c;font-size:.75rem}
 .composer-wrap{padding:12px 32px 19px;background:linear-gradient(transparent,#fafbfc 14%);flex-shrink:0}.composer{max-width:848px;margin:auto;background:white;border:1px solid #cfd9dd;border-radius:14px;box-shadow:0 5px 22px #233a4a07;padding:15px 16px 11px}.composer textarea{width:100%;min-height:56px;max-height:160px;border:0;outline:none;resize:vertical;color:#23313b;line-height:1.7;background:transparent}.composer-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}.composer-footer span{font-size:.75rem;color:var(--muted)}.send{border:0;background:#173b32;color:white;border-radius:8px;padding:8px 16px;font-size:.875rem}.footnote{text-align:center;font-size:.75rem;color:#88969e;margin-top:9px}.notice{font-size:.875rem;color:#934c22;margin:12px 0}.hidden,[hidden]{display:none!important}
 dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;padding:25px;color:#23313b;box-shadow:0 30px 100px #183b3c30}dialog::backdrop{background:#172c3b55;backdrop-filter:blur(3px)}.dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}.dialog-head h2{font-size:1.125rem;margin:0}.path-row{display:flex;gap:8px}.path-row input{flex:1;min-width:0;border:1px solid #d2dce0;border-radius:7px;padding:9px 10px;font-size:.8rem}.folder-list{height:280px;overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px}.folder{display:block;background:white;border:0;border-bottom:1px solid #f0f3f5;padding:12px 15px;width:100%;text-align:left;font-size:.875rem;color:#36505b}.folder:hover{background:#eef5f2}.folder::before{content:"▱";color:#529478;font-size:1.1rem;margin-right:12px}.dialog-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px}.dialog-bottom small{font-size:.75rem;color:var(--muted)}.empty-list{padding:24px;color:var(--muted);font-size:.875rem}
 @media(max-width:760px){.app{grid-template-columns:190px minmax(0,1fr)}.sidebar{padding:20px 10px}.topbar{padding:0 18px}.conversation{padding:20px}.welcome{padding-top:40px}h1{font-size:1.5rem}.suggestions{grid-template-columns:1fr}.composer-wrap{padding:12px 16px}.footnote{line-height:1.6}}
@@ -31,12 +34,13 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
   <div class="brand"><span class="mark">H</span>HERMES</div>
   <button class="open-button" id="open-project"><span>＋</span> 打开项目</button>
   <section class="project-section"><p class="caption">项目</p><div class="projects" id="projects"></div></section>
-  <div class="sidebar-bottom"><span class="pill">本地工作区</span><br>代码审查 Agent<br>由你配置的模型提供回答</div>
+  <section class="project-section"><label class="caption" for="conversation-select">历史会话</label><select class="open-button" id="conversation-select" aria-label="切换历史会话" style="width:100%;margin-top:10px"><option value="">新对话</option></select></section>
+  <div class="sidebar-bottom"><span class="pill">本地工作区</span><br>项目 Agent<br>由你配置的模型提供回答</div>
  </aside>
  <main>
-  <header class="topbar"><div><div class="breadcrumb">工作区 / 代码审查</div><div class="title" id="project-title">选择一个项目开始</div></div><div class="top-actions"><span class="session-usage" id="session-usage" title="当前服务启动以来，由模型接口上报的 token 用量">本次服务累计 0 token</span><button class="text-button" id="new-chat">新对话 ＋</button></div></header>
+  <header class="topbar"><div><div class="breadcrumb">工作区 / 项目 Agent</div><div class="title" id="project-title">选择一个项目开始</div></div><div class="top-actions"><span class="session-usage" id="session-usage" title="当前服务启动以来，由模型接口上报的 token 用量">本次服务累计 0 token</span><button class="text-button" id="new-chat">新对话 ＋</button></div></header>
   <div class="scroll" id="scroll"><div class="conversation" id="conversation">
-   <section class="welcome" id="welcome"><div class="mark">H</div><h1>一起看看代码里的问题。</h1><p>选择本机项目，用一句话告诉 Hermes 你想检查什么。<br>Agent 会搜索并阅读相关源码，给出问题位置与修改建议。</p>
+   <section class="welcome" id="welcome"><div class="mark">H</div><h1>一起处理项目里的问题。</h1><p>选择本机项目，用一句话告诉 Hermes 你想检查或修改什么。<br>Agent 会阅读代码、运行沙箱测试；写回修改时会请你审核。</p>
     <div class="suggestions"><button class="suggestion" data-question="帮我审查这个项目，找出可能导致运行失败的 bug，并说明文件、行号和触发条件。">检查潜在 bug<small>异常、边界条件与错误处理</small></button><button class="suggestion" data-question="检查这个项目的权限校验和输入处理，指出有代码证据的安全问题。">检查安全问题<small>权限、输入校验与数据暴露</small></button></div>
    </section><div id="messages"></div>
   </div></div>
@@ -48,11 +52,12 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
  <div class="folder-list" id="folders"></div><div class="notice" id="picker-error" role="alert" hidden></div>
  <div class="dialog-bottom"><small>进入项目文件夹，再点击右侧按钮。<br>只会读取你选中的项目源码。</small><button class="send" id="select-directory">选择此项目</button></div>
 </dialog>
+<dialog id="approval-dialog" class="approval-dialog" aria-labelledby="approval-title"><h2 id="approval-title">需要你批准代码修改</h2><div id="approval-body"></div><div class="approval-actions"><button class="text-button" id="approval-later">稍后决定</button><button class="text-button" id="approval-reject">拒绝</button><button class="send" id="approval-approve">批准并继续</button></div></dialog>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="hermes-token"]').content;
-const state = {projects:[], selected:null, chats:new Map(), directory:null, polling:false, usage:null};
+const state = {projects:[], selected:null, chats:new Map(), directory:null, polling:false, usage:null, approvalDismissed:new Set(), approvalTurnId:null};
 function element(tag, cls, text) { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; }
 async function api(path, body) {
  const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'X-Hermes-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
@@ -72,12 +77,33 @@ function sessionUsageText(usage) {
  if(usage.unreported_requests)text+='（'+usage.unreported_requests+' 次未上报）';
  return text;
 }
-function chat(id=state.selected?.id) { if(!state.chats.has(id))state.chats.set(id,{turns:[],parent:null,busy:false,draft:''});return state.chats.get(id); }
+function freshChat(conversations=[]) {return {turns:[],parent:null,busy:false,draft:'',conversationId:null,conversations,hydrated:false,loading:false};}
+function chat(id=state.selected?.id) { if(!state.chats.has(id))state.chats.set(id,freshChat());return state.chats.get(id); }
+function rememberConversation(projectId, id) {try{localStorage.setItem('hermes-conversation:'+projectId,id||'new');}catch(_ignored){}}
+function preferredConversation(projectId) {try{return localStorage.getItem('hermes-conversation:'+projectId);}catch(_ignored){return null;}}
+async function loadConversationList(projectId) {const data=await api('/api/conversations?project_id='+encodeURIComponent(projectId));chat(projectId).conversations=data.conversations;}
+async function restoreConversation(projectId, id) {
+ const c=chat(projectId);c.loading=true;if(state.selected?.id===projectId)renderChat();
+ try{const data=await api('/api/conversations/'+encodeURIComponent(id)+'?project_id='+encodeURIComponent(projectId));
+  c.turns=data.turns.map(job=>({...job,projectId,error:job.status==='failed'?job.message:null}));c.conversationId=id;c.parent=c.turns.at(-1)?.id||null;c.hydrated=true;
+  c.busy=c.turns.some(t=>['queued','running'].includes(t.status));rememberConversation(projectId,id);
+  const active=c.turns.find(t=>['queued','running'].includes(t.status));if(active)monitor(projectId,active);
+ }finally{c.loading=false;if(state.selected?.id===projectId)renderChat();}
+}
 function renderProjects() {
  $('projects').replaceChildren();
  for(const p of state.projects){const b=element('button','project'+(state.selected?.id===p.id?' active':''));b.append(element('span','project-name',p.name),element('span','project-path',p.path));b.title=p.path;b.onclick=()=>selectProject(p);$('projects').append(b);}
 }
-function selectProject(project) {if(state.selected)chat().draft=$('question').value;state.selected=project;$('question').value=chat().draft;notice('');renderProjects();renderChat();}
+async function selectProject(project) {
+ if(state.selected)chat().draft=$('question').value;state.selected=project;$('question').value=chat().draft;notice('');renderProjects();
+ try{localStorage.setItem('hermes-project',project.id);}catch(_ignored){}
+ const c=chat(project.id);if(c.hydrated){renderChat();return;}c.loading=true;renderChat();
+ try{await loadConversationList(project.id);const preferred=preferredConversation(project.id);
+  const id=preferred==='new'?null:(c.conversations.find(item=>item.id===preferred)?.id||c.conversations[0]?.id);
+  if(id)await restoreConversation(project.id,id);c.hydrated=true;
+ }catch(error){if(state.selected?.id===project.id)notice('读取历史会话失败：'+error.message);}
+ finally{c.loading=false;if(state.selected?.id===project.id)renderChat();}
+}
 function renderMarkdown(container, text) {
  // 通过文本节点渲染 Markdown 子集，模型输出的 HTML 永远不被执行。
  container.replaceChildren();let code=null,list=null;
@@ -95,20 +121,78 @@ function renderMarkdown(container, text) {
 }
 function renderChat() {
  const c=chat();$('project-title').textContent=state.selected?.name||'选择一个项目开始';$('welcome').hidden=!!c.turns.length;$('messages').replaceChildren();
+ const picker=$('conversation-select');picker.replaceChildren(element('option','','新对话'));picker.firstChild.value='';
+ for(const item of c.conversations){const option=element('option','',item.title+' · '+item.turn_count+' 轮');option.value=item.id;picker.append(option);}picker.value=c.conversationId||'';
  $('session-usage').textContent=sessionUsageText(state.usage);
  if(state.usage)$('session-usage').title=usageText(state.usage,'本次服务累计');
  for(const turn of c.turns) {
   $('messages').append(element('div','message user',turn.question));
   const box=element('article','message assistant');const label=element('div','assistant-label');label.append(element('span','mark','H'),document.createTextNode('Hermes'));box.append(label);
-  if(turn.events?.length){const detail=element('details');detail.append(element('summary','', '查看检查过程 · '+turn.events.length+' 条记录'));const ul=element('ul');for(const e of turn.events)ul.append(element('li','',e.message));detail.append(ul);box.append(detail);}
+  if(turn.mode==='review'||turn.mode==='repair')box.append(element('span','pill',turn.mode==='repair'?'执行修改 · 补丁需人工审核':'只读分析 · 提供建议'));
+  if(turn.status==='blocked')box.append(element('p','notice','修改尚未完成。请查看原因，可继续补充目标或缩小范围。'));
+  if(turn.status==='needs_input')box.append(element('p','notice','需要你确认业务规则。直接回复下方问题，即可沿用本会话继续修改。'));
+  if(turn.status==='interrupted')box.append(element('p','notice','上次执行已中断，可基于已保存的对话继续。'));
+  if(turn.persistence_error)box.append(element('p','error',turn.persistence_error));
+  if(turn.pollError)box.append(element('p','notice',turn.pollError));
+  if(turn.context){const context=turn.context;const detail=element('details');detail.open=!!turn.contextOpen;detail.ontoggle=()=>{turn.contextOpen=detail.open;};
+   detail.append(element('summary','','本轮上下文 · 最近 '+context.recent_turns+' 轮 · 已压缩 '+context.compressed_turns+' 轮'));
+   detail.append(element('p','','带入 '+context.history_chars+' / '+context.max_chars+' 字符，历史证据索引 '+context.evidence_count+' 条。字符预算不是 token 计费。'));
+   if(context.shortened_messages)detail.append(element('p','','部分长消息已缩略，完整记录仍可在历史会话中查看或由 Agent 检索。'));
+   if(context.summary)detail.append(element('div','trace-detail',context.summary));box.append(detail);}
+  if(turn.trace?.length){const detail=element('details');detail.open=!!turn.traceOpen;detail.ontoggle=()=>{turn.traceOpen=detail.open;};detail.append(element('summary','', '查看 Agent 运行日志 · '+turn.trace.length+' 条记录'));
+   const intro=element('p','trace-path','记录的是可观察的决策与执行结果，不是模型的隐藏思维链。');detail.append(intro);
+   if(turn.trace_path)detail.append(element('p','trace-path','本地 JSONL：'+turn.trace_path));
+   if(turn.trace_error)detail.append(element('p','error',turn.trace_error));
+   const ul=element('ol','trace-list');for(const row of turn.trace){const li=element('li','trace-item');li.append(element('div','trace-head','#'+row.seq+' · '+row.summary),element('span','trace-meta',row.time+' · '+row.stage+' · '+row.event));if(row.details&&Object.keys(row.details).length)li.append(element('div','trace-detail',JSON.stringify(row.details,null,2)));ul.append(li);}detail.append(ul);box.append(detail);}
+  else if(turn.events?.length){const detail=element('details');detail.append(element('summary','', '查看检查过程 · '+turn.events.length+' 条记录'));const ul=element('ul');for(const e of turn.events)ul.append(element('li','',e.message));detail.append(ul);box.append(detail);}
   if(turn.answer){const answer=element('div','answer');renderMarkdown(answer,turn.answer);box.append(answer);}
   else if(turn.error)box.append(element('div','error',turn.error));
   else box.append(element('div','progress active',turn.events?.at(-1)?.message||'正在连接模型…'));
+  if(turn.status==='running'&&turn.proposal?.state==='applied')box.append(element('div','progress active','已批准写回，Hermes 正在核对实际项目…'));
   if(turn.usage?.requests)box.append(element('div','usage',usageText(turn.usage,'本次审查')));
+  for(const step of turn.steps||[]){if(step.tool==='run_tests'&&step.result){const detail=element('details');detail.append(element('summary','','查看沙箱测试输出'));detail.append(element('pre','',step.result.output||'没有测试输出'));box.append(detail);}}
+  if(turn.proposal){
+   const proposal=turn.proposal;
+   box.append(element('p','', '修复方案 · '+(proposal.state==='expired'?'已失效，请重新生成':turn.status==='interrupted'?'执行已中断，请核对结果':turn.status==='completed'&&proposal.state==='applied'?'已批准并完成':turn.status==='rejected'?'已拒绝':turn.status==='running'?'已批准，正在继续核对':'等待人工审核')));
+   for(const file of proposal.files){const detail=element('details');detail.append(element('summary','',fileLabel(file)));detail.append(element('pre','',file.diff));box.append(detail);}
+   box.append(element('p','usage','沙箱验证：'+proposal.validation.status+' · 退出码 '+proposal.validation.exit_code));
+   if(turn.status==='awaiting_review'){
+    const reopen=element('button','text-button','查看审批请求');reopen.onclick=()=>{state.approvalDismissed.delete(turn.id);showApproval(turn);};box.append(reopen);
+   }
+   if(turn.backup_path)box.append(element('p','usage','原文件备份：'+turn.backup_path));
+   if(turn.approvalError)box.append(element('p','error',turn.approvalError));
+  }
   $('messages').append(box);
  }
- $('send').disabled=!state.selected||c.busy;$('send').textContent=c.busy?'审查中…':'发送 ↑';
- $('new-chat').disabled=c.busy;$('composer-note').textContent=!state.selected?'先打开一个项目':c.busy?'Agent 正在检查相关代码':'只读审查 · Enter 发送，Shift + Enter 换行';
+ const waiting=c.turns.some(t=>t.status==='awaiting_review');
+ $('send').disabled=!state.selected||!c.hydrated||c.busy||waiting||c.loading;$('send').textContent=c.loading?'恢复中…':c.busy?'处理中…':'发送 ↑';
+ $('new-chat').disabled=c.busy||waiting||c.loading;picker.disabled=!state.selected||c.busy||waiting||c.loading;
+ $('composer-note').textContent=!state.selected?'先打开一个项目':c.loading?'正在恢复会话':waiting?'请先处理待审批的修改':c.busy?'Agent 正在工作':'描述问题或修改需求 · Enter 发送';
+ document.querySelector('.footnote').textContent='Hermes 会自动选择审查或修复流程；写回原项目需要你在弹窗批准。';
+ const pending=c.turns.find(t=>t.status==='awaiting_review'&&t.proposal&&!t.approvalBusy&&!state.approvalDismissed.has(t.id));
+ if(pending)showApproval(pending);else if($('approval-dialog').open&&state.approvalTurnId&&!c.turns.some(t=>t.id===state.approvalTurnId&&t.status==='awaiting_review'))$('approval-dialog').close();
+}
+function fileLabel(file){return (file.operation==='create'?'新建':'修改')+' · '+file.path+(file.is_test?' · 测试文件':'');}
+function showApproval(turn){
+ const dialog=$('approval-dialog');if(dialog.open&&state.approvalTurnId===turn.id)return;
+ if(dialog.open)dialog.close();state.approvalTurnId=turn.id;
+ const validation=turn.proposal.validation;
+ const body=$('approval-body');body.replaceChildren();body.append(element('p','',validation.status==='finished'&&validation.exit_code===0?'候选修改已通过本次沙箱测试。请检查代码和测试的差异；批准后才会创建或修改原项目文件。':'候选修改已生成，但尚未通过沙箱验证。请查看具体原因，原项目尚未修改。'));
+ for(const file of turn.proposal.files){const detail=element('details');detail.open=true;detail.append(element('summary','',fileLabel(file)));detail.append(element('pre','',file.diff));body.append(detail);}
+ body.append(element('p','usage','沙箱验证：'+validation.status+' · 退出码 '+validation.exit_code));
+ if(validation.test_paths?.length)body.append(element('p','usage','测试范围：'+validation.test_paths.join('、')));
+ const output=element('details');output.append(element('summary','','查看测试输出'),element('pre','',validation.output||'没有测试输出'));body.append(output);
+ if(!turn.proposal.can_apply)body.append(element('p','notice','测试未通过或方案已过期，暂不能批准写回。可以拒绝后继续提问。'));
+ $('approval-approve').disabled=!turn.proposal.can_apply;$('approval-approve').onclick=()=>decideProposal(turn,'approve');
+ $('approval-reject').onclick=()=>decideProposal(turn,'reject');dialog.showModal();
+}
+$('approval-later').onclick=()=>{state.approvalDismissed.add(state.approvalTurnId);$('approval-dialog').close();};
+$('approval-dialog').onclose=()=>{if(state.approvalTurnId)state.approvalDismissed.add(state.approvalTurnId);};
+async function decideProposal(turn,decision){
+ turn.approvalBusy=true;turn.approvalError=null;state.approvalDismissed.add(turn.id);$('approval-dialog').close();renderChat();
+ try{const job=await api('/api/reviews/'+turn.id+'/decision',{proposal_id:turn.proposal.id,decision});Object.assign(turn,{status:job.status,proposal:job.proposal,events:job.events,trace:job.trace,trace_path:job.trace_path,trace_error:job.trace_error,backup_path:job.backup_path});}
+ catch(error){turn.approvalError=error.message;try{const job=await api('/api/reviews/'+turn.id);turn.proposal=job.proposal;turn.status=job.status;}catch(_ignored){}}
+ finally{turn.approvalBusy=false;if(turn.status==='running'){chat(turn.projectId).busy=true;monitor(turn.projectId,turn);}renderChat();}
 }
 async function browse(path) {
  $('picker-error').hidden=true;$('select-directory').disabled=true;
@@ -129,27 +213,28 @@ $('select-directory').onclick=async()=>{
  catch(e){$('picker-error').textContent=e.message;$('picker-error').hidden=false;}
  finally{$('select-directory').disabled=false;}
 };
-$('new-chat').onclick=()=>{if(state.selected&&!chat().busy){state.chats.set(state.selected.id,{turns:[],parent:null,busy:false,draft:''});$('question').value='';notice('');renderChat();}};
+$('new-chat').onclick=()=>{if(state.selected&&!chat().busy&&!chat().loading){const c=freshChat(chat().conversations);c.hydrated=true;state.chats.set(state.selected.id,c);rememberConversation(state.selected.id,null);$('question').value='';notice('');renderChat();}};
+$('conversation-select').onchange=async event=>{if(!state.selected)return;const id=event.target.value;if(!id){$('new-chat').click();return;}try{await restoreConversation(state.selected.id,id);notice('');}catch(error){notice(error.message);}};
 document.querySelectorAll('[data-question]').forEach(b=>b.onclick=()=>{$('question').value=b.dataset.question;$('question').focus();});
 $('question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();$('chat-form').requestSubmit();}};
 async function monitor(projectId, turn) {
  const c=chat(projectId);
  try {
-  const job=await api('/api/reviews/'+turn.id);turn.events=job.events;turn.usage=job.usage;state.usage=job.session_usage;
-  if(job.status==='completed'){turn.answer=job.answer;c.parent=job.id;c.busy=false;}
-  else if(job.status==='failed'){turn.error=job.message;c.busy=false;}
+  const job=await api('/api/reviews/'+turn.id);turn.pollError=null;turn.context=job.context;turn.persistence_error=job.persistence_error;turn.backup_path=job.backup_path;turn.mode=job.mode;turn.events=job.events;turn.trace=job.trace;turn.trace_path=job.trace_path;turn.trace_error=job.trace_error;turn.usage=job.usage;turn.steps=job.steps;turn.status=job.status;turn.proposal=job.proposal;state.usage=job.session_usage;
+  if(['completed','blocked','needs_input','interrupted','awaiting_review','applied','rejected'].includes(job.status)){turn.answer=job.answer;c.parent=job.id;c.busy=false;}
+  else if(job.status==='failed'){turn.error=job.message;c.parent=job.id;c.busy=false;}
   if(state.selected?.id===projectId)renderChat();
   if(c.busy)setTimeout(()=>monitor(projectId,turn),1200);
- }catch(e){turn.error='读取状态失败：'+e.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
+ }catch(e){turn.pollError='暂时无法读取任务状态：'+e.message+'。正在重试，服务重启后请刷新页面。';c.busy=true;if(state.selected?.id===projectId)renderChat();setTimeout(()=>monitor(projectId,turn),3000);}
 }
 $('chat-form').onsubmit=async e=>{
- e.preventDefault();if(!state.selected)return notice('请先打开项目。');const c=chat();if(c.busy)return;
+ e.preventDefault();if(!state.selected)return notice('请先打开项目。');const c=chat();if(!c.hydrated||c.busy||c.loading||c.turns.some(t=>t.status==='awaiting_review'))return;
  const question=$('question').value.trim();if(!question)return notice('请输入想检查的问题。');if(question.length>4000)return notice('问题请控制在 4000 字以内。');
- const projectId=state.selected.id;const turn={question,events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
- try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent});turn.id=data.id;monitor(projectId,turn);}
+ const projectId=state.selected.id;const turn={question,projectId,events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
+ try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent});turn.id=data.id;c.conversationId=data.conversation_id;rememberConversation(projectId,c.conversationId);monitor(projectId,turn);loadConversationList(projectId).then(()=>{if(state.selected?.id===projectId)renderChat();}).catch(()=>{});}
  catch(error){turn.error=error.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
 };
-api('/api/projects').then(data=>{state.projects=data.projects;if(state.projects.length)selectProject(state.projects[0]);else renderChat();renderProjects();}).catch(e=>notice(e.message));
+api('/api/projects').then(data=>{state.projects=data.projects;let preferred;try{preferred=localStorage.getItem('hermes-project');}catch(_ignored){}if(state.projects.length)selectProject(state.projects.find(p=>p.id===preferred)||state.projects[0]);else renderChat();renderProjects();}).catch(e=>notice(e.message));
 api('/api/usage').then(data=>{state.usage=data;renderChat();}).catch(()=>{$('session-usage').textContent='累计用量暂不可用';});
 </script>
 </body>

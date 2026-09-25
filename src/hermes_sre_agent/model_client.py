@@ -27,6 +27,7 @@ class ModelConfig:
     api_key: str
     model: str
     timeout_seconds: int = 60
+    max_output_tokens: int = 4096
 
     @classmethod
     def from_environment(cls) -> "ModelConfig":
@@ -34,13 +35,19 @@ class ModelConfig:
         base_url = os.environ.get("HERMES_BASE_URL", "").rstrip("/")
         api_key = os.environ.get("HERMES_API_KEY", "")
         model = os.environ.get("HERMES_MODEL", "")
+        try:
+            max_output_tokens = int(os.environ.get("HERMES_MAX_OUTPUT_TOKENS", "4096"))
+        except ValueError as exc:
+            raise ModelConfigurationError("HERMES_MAX_OUTPUT_TOKENS 必须是 256 到 16384 的整数。") from exc
+        if not 256 <= max_output_tokens <= 16384:
+            raise ModelConfigurationError("HERMES_MAX_OUTPUT_TOKENS 必须是 256 到 16384 的整数。")
         if not all((base_url, api_key, model)):
             raise ModelConfigurationError(
                 "Agent 模式需要 HERMES_BASE_URL、HERMES_API_KEY 和 HERMES_MODEL 三个环境变量。"
             )
         if not base_url.startswith(("https://", "http://localhost", "http://127.0.0.1")):
             raise ModelConfigurationError("模型地址必须使用 HTTPS；本机 localhost / 127.0.0.1 可使用 HTTP。")
-        return cls(base_url=base_url, api_key=api_key, model=model)
+        return cls(base_url=base_url, api_key=api_key, model=model, max_output_tokens=max_output_tokens)
 
 
 class OpenAICompatibleClient:
@@ -49,6 +56,7 @@ class OpenAICompatibleClient:
     def __init__(self, config: ModelConfig):
         self.config = config
         self.last_usage = None
+        self.last_finish_reason = None
 
     @staticmethod
     def _parse_usage(data):
@@ -67,10 +75,12 @@ class OpenAICompatibleClient:
 
     def complete(self, messages: List[Dict[str, str]]) -> str:
         self.last_usage = None
+        self.last_finish_reason = None
         payload = json.dumps({
             "model": self.config.model,
             "messages": messages,
             "temperature": 0.1,
+            "max_tokens": self.config.max_output_tokens,
         }, ensure_ascii=False).encode("utf-8")
         request = Request(
             f"{self.config.base_url}/chat/completions",
@@ -95,7 +105,11 @@ class OpenAICompatibleClient:
             raise ModelRequestError("模型响应不符合 OpenAI Chat Completions 格式。")
         self.last_usage = self._parse_usage(data)
         try:
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason")
+            if isinstance(finish_reason, str) and finish_reason in {"stop", "length", "content_filter", "tool_calls"}:
+                self.last_finish_reason = finish_reason
         except (KeyError, IndexError, TypeError) as exc:
             raise ModelRequestError("模型响应不符合 OpenAI Chat Completions 格式。") from exc
         if not isinstance(content, str):

@@ -41,3 +41,13 @@ class ModelUsageTests(unittest.TestCase):
                          {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10})
         self.assertIsNone(parse({"usage": {"prompt_tokens": True, "completion_tokens": 3}}))
         self.assertIsNone(parse({"usage": {"prompt_tokens": -1, "completion_tokens": 3}}))
+
+    def test_output_limit_and_finish_reason_are_exposed(self):
+        response = FakeResponse({"choices": [{"message": {"content": "{\"type\":\"patch\""},
+                                               "finish_reason": "length"}]})
+        client = OpenAICompatibleClient(ModelConfig("https://example.com/v1", "key", "model"))
+        with patch("hermes_sre_agent.model_client.urlopen", return_value=response) as urlopen:
+            client.complete([])
+        sent = json.loads(urlopen.call_args.args[0].data)
+        self.assertEqual(sent["max_tokens"], 4096)
+        self.assertEqual(client.last_finish_reason, "length")

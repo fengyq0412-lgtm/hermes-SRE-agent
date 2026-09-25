@@ -56,11 +56,39 @@ class CodeReviewTests(unittest.TestCase):
         self.assertTrue(any("已读取 main.py" in e["message"] for e in events))
         self.assertIn("总体风险", result["answer"])
 
+    def test_trace_records_decisions_without_raw_source_or_secret(self):
+        (self.root / "main.py").write_text("PRIVATE_MARKER = 'sensitive-value'\n", encoding="utf-8")
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"},
+             "reason": "先读取入口文件确定审查范围"},
+            {"type": "final", "answer": "总体风险：待评估。", "reason": "已读取范围有限，保留残余风险"},
+        ])
+        trace = []
+        CodeReviewAgent(self.root, client, on_trace=trace.append).run("检查")
+        self.assertEqual([row["event"] for row in trace], ["review_start", "tool_result", "final"])
+        self.assertEqual(trace[1]["details"]["reason"], "先读取入口文件确定审查范围")
+        self.assertEqual(trace[1]["details"]["line_count"], 1)
+        self.assertNotIn("sensitive-value", json.dumps(trace, ensure_ascii=False))
+        self.assertNotIn("PRIVATE_MARKER", json.dumps(trace, ensure_ascii=False))
+        self.assertEqual(CodeReviewAgent._safe_reason({"reason": "API_KEY=sk-secret"}),
+                         "决策说明疑似包含敏感信息或代码，已省略")
+
     def test_outline_locates_python_functions_without_reading_entire_file(self):
         outline = self.tools.file_outline("main.py")
         self.assertEqual(outline["symbols"][0]["name"], "divide")
         self.assertEqual(outline["symbols"][0]["line"], 1)
         self.assertEqual(outline["symbols"][0]["end_line"], 2)
+
+    def test_symbol_lookup_resolves_import_alias_to_real_function(self):
+        (self.root / "main.py").write_text("from worker import actual as task_alias\n", encoding="utf-8")
+        (self.root / "worker.py").write_text("def actual(value):\n    return value + 1\n", encoding="utf-8")
+        result = self.tools.resolve_symbol("task_alias")
+        self.assertFalse(result["truncated"])
+        binding = result["matches"][0]
+        self.assertEqual(binding["path"], "main.py")
+        self.assertEqual(binding["imported_name"], "actual")
+        self.assertEqual(binding["target_path"], "worker.py")
+        self.assertEqual(binding["definition_line"], 1)
 
     def test_tool_budget_still_allows_a_final_synthesis_call(self):
         client = ScriptedClient([

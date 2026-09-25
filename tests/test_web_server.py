@@ -1,4 +1,5 @@
 import errno
+import json
 import os
 import tempfile
 import unittest
@@ -12,6 +13,22 @@ from hermes_sre_agent.web_server import (HermesRequestHandler, ProjectRegistry, 
 
 
 class WebConsoleTests(unittest.TestCase):
+    def test_routing_distinguishes_advice_from_explicit_execution(self):
+        cases = [
+            ("请帮我修复 main.py 的边界错误", '{"mode":"review"}', "repair"),
+            ("只给修复建议，不要改代码", '{"mode":"repair"}', "review"),
+            ("如何修复这个 bug？", "无法识别", "review"),
+            ("只分析这个项目", "无法识别", "review"),
+            ("修复 main.py", "无法识别", "repair"),
+            ("检查一下有哪些 bug", '{"mode":"review"}', "review"),
+            ("就按你上面的方案改", '{"mode":"repair"}', "repair"),
+        ]
+        for question, reply, expected in cases:
+            with self.subTest(question=question):
+                client = SimpleNamespace(complete=lambda messages: reply)
+                mode, _, _ = ReviewJobs._choose_mode(client, question, [])
+                self.assertEqual(mode, expected)
+
     def test_port_conflict_shows_actionable_message(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HERMES_WEB_PORT": "8765"}), \
                 patch("hermes_sre_agent.web_server.load_dotenv"), \
@@ -148,6 +165,45 @@ class WebConsoleTests(unittest.TestCase):
             finally:
                 jobs.executor.shutdown(wait=True)
 
+    def test_trace_is_persisted_as_ordered_jsonl_without_model_payload(self):
+        class FakeClient:
+            def __init__(self):
+                self.last_usage = None
+                self.calls = 0
+
+            def complete(self, _messages):
+                self.calls += 1
+                self.last_usage = {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12}
+                answers = [
+                    {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"},
+                     "reason": "读取主入口验证代码路径"},
+                    {"type": "final", "answer": "总体风险：待评估。", "reason": "证据范围有限"},
+                ]
+                return json.dumps(answers[self.calls - 1], ensure_ascii=False)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.py").write_text("SECRET_VALUE = 'do-not-log'\n", encoding="utf-8")
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, client_factory=FakeClient, trace_dir=root / ".hermes" / "traces")
+            try:
+                job_id = jobs.create(project_id, "审查代码")['id']
+                for _ in range(100):
+                    job = jobs.get(job_id)
+                    if job["status"] == "completed":
+                        break
+                    time.sleep(.01)
+                self.assertEqual(job["status"], "completed")
+                rows = [json.loads(line) for line in Path(job["trace_path"]).read_text(encoding="utf-8").splitlines()]
+                self.assertEqual(rows, job["trace"])
+                self.assertEqual([row["seq"] for row in rows], list(range(1, len(rows) + 1)))
+                self.assertEqual(len([row for row in rows if row["event"] == "usage"]), 2)
+                self.assertNotIn("do-not-log", json.dumps(rows, ensure_ascii=False))
+                self.assertNotIn("SECRET_VALUE", json.dumps(rows, ensure_ascii=False))
+            finally:
+                jobs.executor.shutdown(wait=True)
+
     def test_registry_only_lists_configured_existing_projects(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             registry = ProjectRegistry(f"{first}{os.pathsep}/does-not-exist{os.pathsep}{second}")
@@ -161,6 +217,8 @@ class WebConsoleTests(unittest.TestCase):
     def test_console_asset_is_packaged_with_the_server(self):
         asset = HermesRequestHandler.asset_path
         content = asset.read_text(encoding="utf-8")
-        self.assertIn("代码审查 Agent", content)
+        self.assertIn("项目 Agent", content)
+        self.assertIn("需要你批准代码修改", content)
+        self.assertNotIn("id=\"task-mode\"", content)
         self.assertIn("/api/reviews", content)
         self.assertIn("本次审查", content)
