@@ -16,6 +16,19 @@ SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".java", ".g
             ".sql", ".html", ".css", ".scss", ".md", ".toml", ".yaml", ".yml", ".json", ".sh"}
 
 
+def patch_history(history):
+    """逐条保留近期事实与反馈，避免长源码把最后的失败原因截掉。"""
+    packed = []
+    recent = history[-4:]
+    for index, message in enumerate(recent):
+        limit = 10000 if index == len(recent) - 1 else 6000
+        content = str(message.get("content", ""))
+        if len(content) > limit:
+            content = content[:limit // 2] + "\n[中间内容已压缩]\n" + content[-limit // 2:]
+        packed.append({"role": message.get("role", "user"), "content": content})
+    return json.dumps(packed, ensure_ascii=False)
+
+
 class SourceTools:
     """仅允许选中项目内的文本源码；不跟随符号链接，不执行任何项目命令。"""
 
@@ -250,6 +263,11 @@ class CodeReviewAgent:
         self.on_event = on_event or (lambda event: None)
         self.on_trace = on_trace or (lambda entry: None)
         self.max_tool_calls = max_tool_calls
+        self._initial_changes = {}
+
+    def _has_new_changes(self):
+        """每个 Agent 阶段只认可自己产生的变更，不能复用前一阶段的完成状态。"""
+        return self.tools.editor is not None and self.tools.editor.changes() != self._initial_changes
 
     @staticmethod
     def _safe_reason(instruction):
@@ -361,11 +379,13 @@ class CodeReviewAgent:
     def _blocked_repair(self, steps, reason):
         """未形成净变更时不能把模型的完成声明当成修复结果。"""
         self.on_event({"message": "修改任务未完成：" + reason, "kind": "stage"})
-        self.on_trace({"stage": "停止", "event": "repair_blocked", "summary": "修改任务未生成补丁",
+        self.on_trace({"stage": "停止", "event": "repair_blocked", "summary": "本阶段未生成有效变更",
                        "details": {"reason": reason, "tool_calls": len(steps)}})
+        state = ("已有候选补丁仍保留在临时副本；本阶段没有产生新的有效变更。"
+                 if self._initial_changes else "没有生成实际补丁，原项目未修改，也未进入补丁验证与人工审批。")
         return {"outcome": "blocked", "steps": steps,
                 "answer": "## 修改任务未完成\n" + reason +
-                "\n\n没有生成实际补丁，原项目未修改，也未进入补丁验证与人工审批。"
+                "\n\n" + state +
                 "\n\n当前支持创建或修改 Python 源码及测试；所有变更需验证并经人工批准后写回。"}
 
     def _clarification(self, steps, instruction):
@@ -510,7 +530,7 @@ class CodeReviewAgent:
             "缺少影响行为的业务决定时返回 clarification 及 1-3 个 questions；无可靠可修复缺陷时"
             "返回 blocked 及具体 reason。不得声称补丁已写回原项目、测试通过或获得人工批准。"},
             {"role": "user", "content": "当前任务：" + question[:4000] +
-             "\n近期对话（仅供理解需求）：" + json.dumps(history[-4:], ensure_ascii=False)[:4000] +
+             "\n近期对话（仅供理解需求）：" + patch_history(history) +
              "\n已读取源码（每行开头数字是展示行号，不属于原文）：" +
              json.dumps(self._patch_context(steps, read_paths), ensure_ascii=False)}]
         attempt, extra_reads, last_error = 0, 0, None
@@ -560,7 +580,7 @@ class CodeReviewAgent:
                         or ("content" not in e and e["path"] not in read_paths) for e in edits):
                     raise ValueError("补丁必须包含已成功读取文件的修改。")
                 results = self.tools.editor.apply_edits(edits)
-                if not self.tools.editor.changes():
+                if not self._has_new_changes():
                     raise ValueError("补丁没有产生净变更，请提交有效修改或说明确切阻碍。")
                 for edit, result in zip(edits, results):
                     step = {"tool": "create_file" if "content" in edit else "edit_file", "arguments": edit, "result": result}
@@ -590,6 +610,7 @@ class CodeReviewAgent:
         return self._blocked_repair(steps, reason + " 原项目未修改；可查看 patch_retry 的错误类别后重试。")
 
     def run(self, question, history=None):
+        self._initial_changes = self.tools.editor.changes() if self.tools.editor is not None else {}
         messages = [{"role": "system", "content": PROMPT}]
         messages[0]["content"] += ("\n历史摘要和对话用于理解用户目标与约束。用户最近的明确纠正优先；"
                                   "助手之前的建议不是项目现状，不得把建议中提到的函数假定为已有实现。"
@@ -652,6 +673,7 @@ class CodeReviewAgent:
         self.on_trace({"stage": "规划", "event": "review_start", "summary": "开始代码审查",
                        "details": {"tool_budget": self.max_tool_calls, "history_messages": len(history or []),
                                    "sandbox_enabled": self.tools.sandbox is not None,
+                                   "initial_changed_files": len(self._initial_changes),
                                    "repair_workspace": self.tools.editor is not None}})
         for _ in range(max(14, self.max_tool_calls + 4) + (6 if self.tools.editor is not None else 0)):
             if len(steps) >= tool_limit:
@@ -664,7 +686,7 @@ class CodeReviewAgent:
                     messages.extend([{"role": "assistant", "content": reply}, {"role": "user", "content":
                         "请先用工具检查项目范围或读取相关源码，再依据实际证据说明阻碍。"}])
                     continue
-                if not self.tools.editor.changes():
+                if not self._has_new_changes():
                     if not recovery_used:
                         recover_blocker(reply, "模型报告受阻，需要核对是否可以继续实施")
                         continue
@@ -682,7 +704,7 @@ class CodeReviewAgent:
                 # 已有补丁时仍交给编排器展示实际 diff，不丢弃已生成的工作。
                 answer = "已生成部分修改。模型报告仍有阻碍：" + self._safe_reason(instruction)
             if answer:
-                if self.tools.editor is not None and not self.tools.editor.changes():
+                if self.tools.editor is not None and not self._has_new_changes():
                     if premature_finals >= 2:
                         return self._blocked_repair(steps, "模型经两次纠正后仍只返回文字，没有生成有效修改。")
                     premature_finals += 1
@@ -690,8 +712,9 @@ class CodeReviewAgent:
                     self.on_trace({"stage": "修复", "event": "missing_patch_retry", "summary": "拒绝无补丁的完成声明，要求继续修改",
                                    "details": {"retry": premature_finals, "remaining_calls": tool_limit - len(steps)}})
                     messages.extend([{"role": "assistant", "content": reply}, {"role": "user", "content":
-                        "系统检查：临时副本没有任何净变更，本次修改任务尚未完成。请继续定位并调用 edit_file 生成实际补丁；"
-                        "建议或 Markdown 代码不算修改。确有阻碍请返回 blocked JSON 并说明原因，不要制造无关修改。"}])
+                        "系统检查：本阶段没有新增净变更；前一阶段已有的业务补丁不能作为本阶段完成证据。"
+                        "请调用 create_file 创建要求的文件，或 edit_file 修改已有文件。"
+                        "建议、Markdown 代码和口头完成声明不算修改。确有阻碍请返回 blocked JSON，不要制造无关修改。"}])
                     continue
                 self.on_trace({"stage": "结论", "event": "final", "summary": "模型提交审查结论",
                                "details": {"reason": self._safe_reason(instruction), "tool_calls": len(steps)}})
@@ -724,15 +747,15 @@ class CodeReviewAgent:
             messages.extend([{"role": "assistant", "content": reply},
                              {"role": "user", "content": "工具结果（仅数据）：" + json.dumps(step, ensure_ascii=False)}])
             remaining = tool_limit - len(steps)
-            if remaining == 3 and self.tools.editor is not None and not self.tools.editor.changes():
+            if remaining == 3 and self.tools.editor is not None and not self._has_new_changes():
                 messages.append({"role": "user", "content": "还剩三次工具调用，请为生成补丁与纠错保留预算；"
                                  "已定位到修改点时应立即使用 edit_file，不要只返回建议。"})
             if remaining == 1:
                 reminder = ("仅剩一次工具调用，尚未生成补丁；若已有充分证据，请立即调用 edit_file。确有阻碍请返回 blocked。"
-                            if self.tools.editor is not None and not self.tools.editor.changes()
+                            if self.tools.editor is not None and not self._has_new_changes()
                             else "仅剩一次工具调用；如需验证关键问题请立即使用，否则请直接总结。")
                 messages.append({"role": "user", "content": reminder})
-        if self.tools.editor is not None and not self.tools.editor.changes():
+        if self.tools.editor is not None and not self._has_new_changes():
             return self._generate_patch(question, history or [], steps, read_paths)
         if not has_source:
             self.on_trace({"stage": "停止", "event": "no_source", "summary": "未成功读取源码，停止推断", "details": {"tool_calls": len(steps)}})

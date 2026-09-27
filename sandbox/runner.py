@@ -20,7 +20,9 @@ class TestResults:
 
 
 results = TestResults()
-status = pytest.main(["-q", "-p", "no:cacheprovider", *sys.argv[1:]], plugins=[results])
+# 仍禁用自动加载其他插件，仅显式开启镜像内固定版本的异步测试插件。
+status = pytest.main(["-q", "-p", "no:cacheprovider", "-p", "pytest_asyncio.plugin",
+                      "-o", "asyncio_default_fixture_loop_scope=function", *sys.argv[1:]], plugins=[results])
 if status == 0 and results.passed == 0:
     print("未执行通过任何测试，不能据此确认补丁已验证。")
     status = 5

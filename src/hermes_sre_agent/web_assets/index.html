@@ -180,6 +180,7 @@ function showApproval(turn){
  const body=$('approval-body');body.replaceChildren();body.append(element('p','',validation.status==='finished'&&validation.exit_code===0?'候选修改已通过本次沙箱测试。请检查代码和测试的差异；批准后才会创建或修改原项目文件。':'候选修改已生成，但尚未通过沙箱验证。请查看具体原因，原项目尚未修改。'));
  for(const file of turn.proposal.files){const detail=element('details');detail.open=true;detail.append(element('summary','',fileLabel(file)));detail.append(element('pre','',file.diff));body.append(detail);}
  body.append(element('p','usage','沙箱验证：'+validation.status+' · 退出码 '+validation.exit_code));
+ if(validation.summary)body.append(element('p',validation.failure_kind==='passed'?'usage':'notice',validation.summary));
  if(validation.test_paths?.length)body.append(element('p','usage','测试范围：'+validation.test_paths.join('、')));
  const output=element('details');output.append(element('summary','','查看测试输出'),element('pre','',validation.output||'没有测试输出'));body.append(output);
  if(!turn.proposal.can_apply)body.append(element('p','notice','测试未通过或方案已过期，暂不能批准写回。可以拒绝后继续提问。'));

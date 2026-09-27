@@ -154,6 +154,7 @@ class FilePermissionTests(unittest.TestCase):
             {"type": "tool_call", "tool": "edit_file", "arguments": {"path": "main.py", "old_text": "x = 1", "new_text": "x = 2"}},
             {"type": "final", "answer": "候选修改已生成"},
             {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "final", "answer": "已经创建测试文件"},
             {"type": "tool_call", "tool": "create_file", "arguments": {"path": "tests/test_value.py", "content":
                 "from main import x\ndef test_changed_default():\n    assert x == 2\n"}},
             {"type": "final", "answer": "回归测试已生成"},

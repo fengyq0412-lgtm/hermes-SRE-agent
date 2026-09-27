@@ -1,0 +1,6 @@
+# 沙箱预装测试工具与常用 Web 框架；不读取被审查项目的依赖安装脚本。
+pytest==8.3.5
+pytest-asyncio==0.24.0
+fastapi==0.141.1
+pydantic==2.13.5
+httpx==0.28.1

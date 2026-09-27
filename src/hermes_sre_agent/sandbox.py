@@ -2,6 +2,7 @@
 
 import ast
 import os
+import re
 import selectors
 import stat
 import subprocess
@@ -19,6 +20,14 @@ class DockerSandbox:
     def __init__(self, root, timeout=60):
         self.root = Path(root).resolve()
         self.timeout = timeout
+        self.image = os.environ.get("HERMES_SANDBOX_IMAGE", IMAGE)
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@-]{0,240}", self.image):
+            raise ValueError("HERMES_SANDBOX_IMAGE 必须是有效的本机镜像名。")
+
+    def runtime_description(self):
+        packages = ("Python 3.11、pytest、pytest-asyncio、FastAPI、Pydantic 和 HTTPX" if self.image == IMAGE else
+                    "依赖由此自定义镜像提供，不能假定包含未确认的软件包")
+        return f"本机镜像 {self.image}；{packages}；无网络；不在测试期间安装依赖。"
 
     def discover_tests(self, preferred="tests"):
         """静态识别 pytest 测试入口，不导入项目；缺少默认目录时查找其他测试位置。"""
@@ -94,14 +103,16 @@ class DockerSandbox:
                        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
                        "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
                        "--env", "HOME=/tmp", "--mount", f"type=bind,src={directory},dst=/source,readonly",
-                       IMAGE, *paths]
+                       self.image, *paths]
             created_ok = False
             try:
                 created = subprocess.run(command, capture_output=True, timeout=15)
                 if created.returncode:
-                    raise ValueError("无法创建沙箱：请启动 Docker Desktop，并先构建 hermes-sandbox:local 镜像。")
+                    raise ValueError(f"无法创建沙箱：请启动 Docker Desktop，并确认本机已构建 {self.image} 镜像。")
                 created_ok = True
-                return self._execute(name, count)
+                result = self._execute(name, count)
+                result["image"] = self.image
+                return result
             except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
                 raise ValueError("Docker 未安装或响应超时，沙箱未能完成。") from exc
             finally:
