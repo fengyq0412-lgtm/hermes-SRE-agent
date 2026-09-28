@@ -20,6 +20,11 @@ class ModelConfigurationError(RuntimeError):
 class ModelRequestError(RuntimeError):
     """模型服务未能返回有效响应时抛出。"""
 
+    def __init__(self, message, *, kind="request_failed", retryable=False):
+        super().__init__(message)
+        self.kind = kind
+        self.retryable = retryable
+
 
 @dataclass(frozen=True)
 class ModelConfig:
@@ -98,9 +103,15 @@ class OpenAICompatibleClient:
             # 供应商错误体可能回显凭据或请求内容，不直接展示在网页。
             status = exc.code
             exc.close()
-            raise ModelRequestError(f"模型服务返回 HTTP {status}，请检查 .env 中的地址、模型名、密钥或服务额度。") from exc
-        except (URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise ModelRequestError(f"模型请求失败：{exc}") from exc
+            raise ModelRequestError(f"模型服务返回 HTTP {status}，请检查 .env 中的地址、模型名、密钥或服务额度。",
+                                    kind="rate_limited" if status == 429 else "http_error",
+                                    retryable=status == 429 or 500 <= status <= 599) from exc
+        except (URLError, TimeoutError) as exc:
+            timeout = isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+            raise ModelRequestError("模型请求超时。" if timeout else "模型网络连接失败。",
+                                    kind="timeout" if timeout else "connection_error", retryable=True) from exc
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise ModelRequestError("模型响应不是有效的 JSON。", kind="invalid_response") from exc
         if not isinstance(data, dict):
             raise ModelRequestError("模型响应不符合 OpenAI Chat Completions 格式。")
         self.last_usage = self._parse_usage(data)

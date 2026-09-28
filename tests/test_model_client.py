@@ -2,9 +2,10 @@
 
 import json
 import unittest
+from urllib.error import URLError
 from unittest.mock import patch
 
-from hermes_sre_agent.model_client import ModelConfig, OpenAICompatibleClient
+from hermes_sre_agent.model_client import ModelConfig, ModelRequestError, OpenAICompatibleClient
 
 
 class FakeResponse:
@@ -22,6 +23,16 @@ class FakeResponse:
 
 
 class ModelUsageTests(unittest.TestCase):
+    def test_timeout_is_structured_and_does_not_echo_provider_details(self):
+        client = OpenAICompatibleClient(ModelConfig("https://example.com/v1", "key", "model"))
+        for failure in (TimeoutError("敏感响应"), URLError(TimeoutError("敏感响应"))):
+            with patch("hermes_sre_agent.model_client.urlopen", side_effect=failure):
+                with self.assertRaises(ModelRequestError) as raised:
+                    client.complete([])
+            self.assertEqual(raised.exception.kind, "timeout")
+            self.assertTrue(raised.exception.retryable)
+            self.assertNotIn("敏感响应", str(raised.exception))
+
     def test_each_response_exposes_reported_usage_and_clears_missing_usage(self):
         responses = [
             FakeResponse({"choices": [{"message": {"content": "你好"}}],

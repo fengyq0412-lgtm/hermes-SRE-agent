@@ -10,6 +10,7 @@ from unittest.mock import patch
 from hermes_sre_agent.repair import ChangeSet, RepairWorkflow
 from hermes_sre_agent.code_review import CodeReviewAgent, patch_history
 from hermes_sre_agent.sandbox import DockerSandbox
+from hermes_sre_agent.model_client import ModelRequestError
 from hermes_sre_agent.test_validation import import_isolation_plan, source_contracts, validation_details
 
 
@@ -20,7 +21,10 @@ class Client:
 
     def complete(self, messages):
         self.prompts.append(json.loads(json.dumps(messages)))
-        return json.dumps(next(self.replies))
+        reply = next(self.replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return json.dumps(reply)
 
 
 def call(tool, **arguments):
@@ -54,7 +58,7 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         self.assertTrue(proposal.public()["can_apply"])
         self.assertEqual(proposal.changes["main.py"][1], b"value = 2\n")
-        self.assertTrue(any(s.get("error") for s in result["steps"] if s["tool"] == "edit_file"))
+        self.assertTrue(any(e["event"] == "patch_retry" for e in trace))
         self.assertIn("assert 2 == 1", json.dumps(client.prompts, ensure_ascii=False))
         self.assertEqual((self.root / "main.py").read_text(), "value = 1\n")
         self.assertEqual(proposal.validation["attempt"], 2)
@@ -85,8 +89,8 @@ class ValidationTests(unittest.TestCase):
             _, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("将 value 改成2", [])
         self.assertTrue(proposal.public()["can_apply"])
         self.assertIn("tests/test_main.py", proposal.changes)
-        self.assertEqual(sum(e["event"] == "missing_patch_retry" for e in trace), 1)
-        self.assertTrue(any(e["event"] == "review_start" and e["details"]["initial_changed_files"] == 1 for e in trace))
+        self.assertEqual(sum(e["event"] == "patch_retry" for e in trace), 1)
+        self.assertTrue(any(e["event"] == "test_patch_context" and e["details"]["initial_changed_files"] == 1 for e in trace))
         run.assert_called_once()
         self.assertFalse((self.root / "tests").exists())
 
@@ -148,6 +152,163 @@ class ValidationTests(unittest.TestCase):
                                       "output": "ModuleNotFoundError: No module named 'fastapi'"})
         self.assertEqual(details["failure_kind"], "dependency_missing")
         self.assertIn("fastapi", details["summary"])
+
+    def test_direct_test_patch_needs_no_final_model_call(self):
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
+            {"type": "patch", "changes": [{"path": "tests/test_main.py", "content":
+                "from main import value\ndef test_value():\n    assert value == 2\n"}]}])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
+                "status": "finished", "exit_code": 0, "output": "1 passed"}):
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
+        self.assertTrue(proposal.public()["can_apply"])
+        self.assertEqual(len(client.prompts), 4)
+        self.assertIn("1: value = 2", client.prompts[-1][-1]["content"])
+
+    def test_new_test_with_empty_old_text_is_created_without_reading_missing_file(self):
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
+            {"type": "patch", "changes": [{"path": "tests/test_main.py", "old_text": "", "new_text":
+                "from main import value\ndef test_value():\n    assert value == 2\n"}]}])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
+                "status": "finished", "exit_code": 0, "output": "1 passed"}) as run:
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
+        run.assert_called_once()
+        self.assertTrue(proposal.public()["can_apply"])
+        self.assertIsNone(proposal.changes["tests/test_main.py"][0])
+        self.assertFalse((self.root / "tests").exists())
+
+    def test_missing_file_wrong_protocol_reports_specific_reason_to_ui(self):
+        invalid = {"type": "patch", "changes": [{"path": "tests/test_main.py", "start_line": 1,
+                    "end_line": 1, "new_text": "def test_value():\n    assert True\n"}]}
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"}, invalid, invalid, invalid])
+        trace = []
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests") as run:
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("修改 value", [])
+        run.assert_not_called()
+        report = proposal.validation["test_agent"]
+        self.assertEqual(report["error_kind"], "missing_create_content")
+        self.assertIn("新文件", report["summary"])
+        self.assertFalse(proposal.public()["can_apply"])
+        retries = [e for e in trace if e["event"] == "patch_retry"]
+        self.assertEqual(retries[0]["details"]["edit_shapes"][0]["fields"], ["path", "new_text", "start_line", "end_line"])
+        self.assertNotIn("assert True", json.dumps(retries))
+
+    def test_malformed_schema_is_not_reported_as_unread_file(self):
+        changes = ChangeSet(self.root)
+        client = Client([call("read_file", path="main.py"),
+                         *[{"type": "patch", "changes": [{"file": "main.py", "code": "value=3"}]}] * 3])
+        result = CodeReviewAgent(self.root, client, editor=changes, max_tool_calls=1).run("修改")
+        self.assertEqual(result["error_kind"], "invalid_patch_schema")
+
+    def test_empty_old_text_never_overwrites_or_escapes(self):
+        changes = ChangeSet(self.root)
+        for path in ("main.py", "../outside.py", "/tmp/escape.py"):
+            with self.assertRaises(ValueError):
+                changes.apply_edits([{"path": path, "old_text": "", "new_text": "value = 9\n"}])
+        (self.root / "alias").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            changes.apply_edits([{"path": "alias/test_new.py", "old_text": "", "new_text": "x=1\n"}])
+        changes.test_only = True
+        with self.assertRaises(ValueError):
+            changes.apply_edits([{"path": "other.py", "old_text": "", "new_text": "x=1\n"}])
+        self.assertEqual((self.root / "main.py").read_text(), "value = 1\n")
+        self.assertEqual(changes.changes(), {})
+
+    def test_scaffold_without_cases_is_not_a_completed_test(self):
+        (self.root / "main.py").write_text('from adapter import fetch\nvalue = 1\n')
+        (self.root / "adapter.py").write_text('import requests\ndef fetch():\n    return requests.get("https://example.invalid")\n')
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
+                        {"type": "blocked", "reason": "无法提供有效用例"}])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests") as run:
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
+        run.assert_not_called()
+        self.assertIn("tests/test_hermes_main.py", proposal.changes)
+        self.assertEqual(proposal.validation["status"], "not_run")
+        self.assertEqual(proposal.validation["test_agent"]["outcome"], "blocked")
+        self.assertFalse(proposal.public()["can_apply"])
+        self.assertFalse((self.root / "tests").exists())
+
+    def test_scaffold_cannot_be_removed_or_bypassed_with_top_level_import(self):
+        changes = ChangeSet(self.root)
+        name = "tests/test_main.py"
+        prefix = "# 保留隔离边界\n"
+        changes.create_file(name, prefix)
+        changes.test_scaffolds[name] = (prefix, "main")
+        for replacement in ("import main\n", prefix + "from main import value\n"):
+            with self.assertRaises(ValueError):
+                changes.apply_edits([{"path": name, "old_text": prefix, "new_text": replacement}])
+            self.assertEqual((self.root / name).read_text(), prefix)
+
+    def test_scaffold_append_requires_current_read_version(self):
+        changes = ChangeSet(self.root)
+        name = "tests/test_main.py"
+        prefix = "# 保留隔离边界\n"
+        changes.create_file(name, prefix)
+        changes.test_scaffolds[name] = (prefix, "main")
+        edit = {"path": name, "append_text": "def test_value():\n    assert 1 == 1\n"}
+        with self.assertRaisesRegex(ValueError, "当前版本末尾"):
+            changes.apply_edits([edit])
+        changes.allow_range(name, 1, 1)
+        changes.apply_edits([edit])
+        with self.assertRaisesRegex(ValueError, "当前版本末尾"):
+            changes.apply_edits([edit])
+        with self.assertRaises(ValueError):
+            changes.apply_edits([{"path": "main.py", "append_text": "value=3\n"}])
+
+    @unittest.skipUnless(os.environ.get("HERMES_SANDBOX_INTEGRATION") == "1", "需要真实 Docker")
+    def test_real_scaffold_with_generated_cases_is_validated(self):
+        (self.root / "main.py").write_text('from adapter import fetch\nvalue = 1\n')
+        (self.root / "adapter.py").write_text('import requests\ndef fetch():\n    return requests.get("https://example.invalid")\n')
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
+            {"type": "patch", "changes": [{"path": "tests/test_hermes_main.py",
+              "append_text": "def test_value(subject):\n    assert subject.value == 2\n"}]}])
+        _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
+        self.assertTrue(proposal.public()["can_apply"], proposal.validation)
+        self.assertIn("1 passed", proposal.validation["output"])
+        self.assertFalse((self.root / "tests").exists())
+
+    @unittest.skipUnless(os.environ.get("HERMES_SANDBOX_INTEGRATION") == "1", "需要真实 Docker")
+    def test_real_sandbox_runs_test_created_with_compatible_protocol(self):
+        client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
+            {"type": "patch", "changes": [{"path": "tests/test_main.py", "old_text": "", "new_text":
+                "from main import value\ndef test_value():\n    assert value == 2\n"}]}])
+        _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
+        self.assertTrue(proposal.public()["can_apply"], proposal.validation)
+        self.assertIn("1 passed", proposal.validation["output"])
+        self.assertFalse((self.root / "tests").exists())
+
+    def test_test_model_timeout_is_reported_without_hiding_sandbox_failure(self):
+        failure = ModelRequestError("模拟超时", kind="timeout", retryable=True)
+        client = Client(self.replies() + [failure, failure])
+        trace = []
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
+                "status": "finished", "exit_code": 2, "output": "No module named 'requests'"}) as run:
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("修改", [])
+        run.assert_called_once()
+        self.assertEqual(proposal.validation["missing_modules"], ["requests"])
+        self.assertEqual(proposal.validation["test_agent"]["error_kind"], "timeout")
+        self.assertFalse(proposal.public()["can_apply"])
+        self.assertEqual(sum(e["event"] == "test_model_retry" for e in trace), 1)
+        self.assertFalse((self.root / "tests").exists())
+
+    def test_transient_test_model_failure_retries_once_and_applies_only_test_patch(self):
+        client = Client(self.replies() + [ModelRequestError("网络故障", kind="connection_error", retryable=True),
+            {"type": "patch", "changes": [{"path": "tests/test_main.py", "old_text": "value == 1", "new_text": "value == 2"}]}])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", side_effect=[
+                {"status": "finished", "exit_code": 1, "output": "assert 2 == 1"},
+                {"status": "finished", "exit_code": 0, "output": "1 passed"}]):
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改", [])
+        self.assertTrue(proposal.public()["can_apply"])
+        self.assertEqual(proposal.changes["main.py"][1], b"value = 2\n")
+
+    def test_source_contracts_keep_route_status_separate_from_body_code(self):
+        before = '@app.post("/remove", response_model=Response)\nasync def remove():\n    return Response(code=400, message="old")\n'
+        after = before.replace('"old"', '"new"')
+        (self.root / "main.py").write_text(after)
+        facts = source_contracts(self.root, {"main.py": (before.encode(), after.encode())})
+        definition = facts[0]["definitions"][0]
+        self.assertIn('app.post', definition["decorators"][0])
+        self.assertNotIn('status_code', definition["decorators"][0])
+        self.assertIn('code=400', definition["source"])
 
     def test_patch_writer_keeps_late_failure_after_large_source(self):
         history = [{"role": "user", "content": "源码" * 20000},

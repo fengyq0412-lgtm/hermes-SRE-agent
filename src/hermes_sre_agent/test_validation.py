@@ -17,6 +17,9 @@ TEST_RULES = (
     "项目导入会连接数据库或服务时，可在导入前隔离明确的外部适配器模块，仍需测试真实目标函数。"
     "遇到 ModuleNotFoundError 应先沿 traceback 修复导入边界，不要只改断言重复运行。"
     "静态依赖表提供定义位置和同步/异步类型，必要时定点读取，勿逐页遍历整个适配器。"
+    "HTTP response.status_code 与 JSON 响应体的 code 不是同一个值；读取路由装饰器、返回类型，分别断言。"
+    "不要把同步 TestClient.post 放入无必要的异步测试，优先直接 await 目标函数或使用同步 TestClient 测试。"
+    "检查目标分支能否到达；提前 return 后的防御代码不等于已复现的业务 bug。"
     "不能用假的 FastAPI/Pydantic 或返回预期值的被测函数替身掩盖环境问题。"
     "不能改业务源码来迎合测试；需求或依赖确实不足时报告具体阻碍。"
 )
@@ -52,7 +55,8 @@ def import_isolation_plan(root, changes):
                 target = tools.resolve(dependency)
                 if target.stat().st_size > 256000:
                     continue
-                definitions = {n.name: n for n in ast.parse(target.read_text(encoding="utf-8")).body
+                dependency_tree = ast.parse(target.read_text(encoding="utf-8"))
+                definitions = {n.name: n for n in dependency_tree.body
                                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
             except (ValueError, SyntaxError, UnicodeError, OSError):
                 continue
@@ -67,7 +71,12 @@ def import_isolation_plan(root, changes):
                 facts.append({"name": name, "async": asynchronous, "line": definition.lineno,
                               "signature": ast.unparse(definition.args)[:1000]})
                 lines.append(f"    adapter.{name} = {'AsyncMock' if asynchronous else 'Mock'}()")
-            dependencies.append({"path": dependency, "symbols": facts})
+            imported_roots = {alias.name.split(".")[0] for n in dependency_tree.body if isinstance(n, ast.Import) for alias in n.names}
+            imported_roots.update(n.module.split(".")[0] for n in dependency_tree.body
+                                  if isinstance(n, ast.ImportFrom) and n.level == 0 and n.module)
+            io_libraries = sorted(imported_roots & {"requests", "httpx", "elasticsearch", "redis", "pymongo",
+                                                    "pymysql", "psycopg2", "sqlite3", "dmPython", "boto3"})
+            dependencies.append({"path": dependency, "symbols": facts, "external_io_libraries": io_libraries})
             lines.append(f"    adapters[{module!r}] = adapter")
         if not dependencies:
             continue
@@ -120,7 +129,8 @@ def source_contracts(root, changes):
                 break
             remaining -= len(snippet)
             excerpts.append({"name": node.name, "async": isinstance(node, ast.AsyncFunctionDef),
-                             "start_line": node.lineno, "end_line": node.end_lineno, "source": snippet})
+                             "start_line": node.lineno, "end_line": node.end_lineno, "source": snippet,
+                             "decorators": [ast.unparse(d) for d in node.decorator_list]})
         imports = [ast.unparse(n) for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
         records.append({"path": path, "imports": imports[:30], "definitions": excerpts})
         if remaining <= 0:

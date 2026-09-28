@@ -383,7 +383,7 @@ class CodeReviewAgent:
                        "details": {"reason": reason, "tool_calls": len(steps)}})
         state = ("已有候选补丁仍保留在临时副本；本阶段没有产生新的有效变更。"
                  if self._initial_changes else "没有生成实际补丁，原项目未修改，也未进入补丁验证与人工审批。")
-        return {"outcome": "blocked", "steps": steps,
+        return {"outcome": "blocked", "steps": steps, "summary": reason,
                 "answer": "## 修改任务未完成\n" + reason +
                 "\n\n" + state +
                 "\n\n当前支持创建或修改 Python 源码及测试；所有变更需验证并经人工批准后写回。"}
@@ -458,9 +458,16 @@ class CodeReviewAgent:
             return "output_truncated"
         if isinstance(exc, ModelRequestError):
             return "invalid_json"
-        if isinstance(instruction, dict) and instruction.get("type") == "tool_call":
+        if (isinstance(instruction, dict) and instruction.get("type") == "tool_call"
+                and instruction.get("tool") not in {"edit_file", "create_file", "read_file"}):
             return "unexpected_tool"
         message = str(exc)
+        if "补丁结构错误" in message:
+            return "invalid_patch_schema"
+        if "新建协议错误" in message:
+            return "missing_create_content"
+        if "新建目标已存在" in message:
+            return "create_target_exists"
         if "old_text 必须" in message:
             return "old_text_not_unique"
         if "已成功读取" in message:
@@ -481,6 +488,9 @@ class CodeReviewAgent:
             "unexpected_tool": "模型在补丁阶段仍请求其他工具。",
             "old_text_not_unique": "old_text 未在临时副本中精确且唯一地命中。",
             "unread_target": "模型试图修改尚未读取的源码文件。",
+            "invalid_patch_schema": "模型补丁字段不符合协议，请区分新建 content 与修改 new_text。",
+            "missing_create_content": "新文件使用了修改协议；应提交完整 content，无需读取不存在的文件。",
+            "create_target_exists": "新建目标已存在，禁止覆盖已有文件。",
             "unread_line_range": "模型指定的行号不在已读取的源码范围内。",
             "no_net_change": "替换没有产生实际净变更。",
             "wrong_reply_type": "模型没有按补丁阶段协议返回 patch。",
@@ -523,7 +533,7 @@ class CodeReviewAgent:
             "new_text 替换起止行的全部内容，若后面还有代码，末尾要带换行符。"
             "也可用 old_text、new_text 做精确文本替换，但 old_text 必须在当前文件中唯一命中，"
             "不能包含展示用行号。最多12处、5个 Python 文件（含测试）；"
-            "修改已有文件须先读取；新建文件使用 changes 中的 {path,content}，content 是完整源码，"
+            "修改已有文件须先读取；新建文件无需读取不存在的路径，使用 changes 中的 {path,content}，content 是完整源码，"
             "路径不能已存在。可以补充或修改测试，但不能删除文件、清空源码或删掉断言来掩盖失败。注释使用中文。"
             "若确实需要补读，最多两次返回 {\"type\":\"tool_call\",\"tool\":\"read_file\","
             "\"arguments\":{\"path\":\"相对路径\",\"start_line\":1,\"end_line\":160}}。"
@@ -533,6 +543,13 @@ class CodeReviewAgent:
              "\n近期对话（仅供理解需求）：" + patch_history(history) +
              "\n已读取源码（每行开头数字是展示行号，不属于原文）：" +
              json.dumps(self._patch_context(steps, read_paths), ensure_ascii=False)}]
+        if self.tools.editor.test_only:
+            writer[0]["content"] += ("\n当前是独立测试阶段，只能创建或修改测试文件，业务源码不可写。"
+                                     "源码、测试及失败输出已经预读；优先直接提交完整测试补丁。"
+                                     "若任务给出预置脚手架，可用 {path,append_text} 追加测试函数，无需重复 fixture。"
+                                     "修复导入错误须在导入目标模块之前隔离已核实的外部 I/O 边界，"
+                                     "不可只调整断言，也不可假冒业务模块或框架。"
+                                     "补丁应用后编排器立即验证，不需要额外 final 调用。")
         attempt, extra_reads, last_error = 0, 0, None
         while attempt < 3:
             reply = self.client.complete(writer)
@@ -575,9 +592,8 @@ class CodeReviewAgent:
                     edits = [instruction.get("arguments")]
                 elif instruction.get("type") != "patch":
                     raise ValueError("取证已结束，请提交 patch JSON，不能继续浏览或只输出建议。")
-                if not isinstance(edits, list) or not edits or any(
-                        not isinstance(e, dict) or not isinstance(e.get("path"), str)
-                        or ("content" not in e and e["path"] not in read_paths) for e in edits):
+                edits = self.tools.editor.normalize_edits(edits)
+                if any("content" not in e and e["path"] not in read_paths for e in edits):
                     raise ValueError("补丁必须包含已成功读取文件的修改。")
                 results = self.tools.editor.apply_edits(edits)
                 if not self._has_new_changes():
@@ -598,16 +614,43 @@ class CodeReviewAgent:
                 code = self._patch_error_code(exc, instruction, finish_reason)
                 last_error = code
                 details = {"attempt": attempt, "error_code": code, "reply_chars": len(reply)}
+                raw_edits = instruction.get("changes") if isinstance(instruction, dict) else None
+                if isinstance(raw_edits, list):
+                    # 仅记录协议字段是否存在，不记录源码、路径或模型自由文本。
+                    details["edit_shapes"] = [{"is_object": isinstance(e, dict),
+                        "fields": [k for k in ("path", "content", "old_text", "new_text", "start_line", "end_line", "append_text") if isinstance(e, dict) and k in e],
+                        "empty_old_text": isinstance(e, dict) and e.get("old_text") == ""} for e in raw_edits[:12]]
                 if finish_reason in {"stop", "length", "content_filter", "tool_calls"}:
                     details["finish_reason"] = finish_reason
                 self.on_trace({"stage": "修改", "event": "patch_retry", "summary": self._patch_error_hint(code),
                                "details": details})
                 writer.extend([{"role": "assistant", "content": reply},
                                {"role": "user", "content": "补丁未生效，请纠正：" + str(exc)[:300] +
-                                "。如果 old_text 因空格或换行无法精确命中，请改用已读取行号的 start_line/end_line/new_text；"
+                                '。新建文件无需先读，使用 {"type":"patch","changes":[{"path":"tests/test_name.py","content":"完整源码"}]}；'
+                                "已有文件 old_text 无法精确命中时，改用已读取行号的 start_line/end_line/new_text；"
                                 "一次只提交最小的一处修改。确实无法修复则说明原因。"}])
         reason = "补丁阶段三次提交均未通过；最后一次失败：" + self._patch_error_hint(last_error or "invalid_patch")
-        return self._blocked_repair(steps, reason + " 原项目未修改；可查看 patch_retry 的错误类别后重试。")
+        result = self._blocked_repair(steps, reason + " 原项目未修改；可查看 patch_retry 的错误类别后重试。")
+        result["error_kind"] = last_error or "invalid_patch"
+        return result
+
+    def run_test_patch(self, question, history, sources):
+        """由编排器预读目标和测试，直接进入补丁阶段，避免重复浏览与多余总结请求。"""
+        if self.tools.editor is None or not self.tools.editor.test_only:
+            raise ValueError("定向测试补丁只能在测试专用临时副本中执行。")
+        self._initial_changes = self.tools.editor.changes()
+        steps, paths = [], set()
+        for path, start, end in sources[:12]:
+            source = self.tools.read_file(path, start, end)
+            if source["content"]:
+                paths.add(path)
+                step = {"tool": "read_file", "arguments": {"path": path, "start_line": start, "end_line": end},
+                        "result": source}
+                steps.append(step)
+                self.on_trace(self._trace_tool(step, "编排器预读测试及相关源码", 0))
+        self.on_trace({"stage": "测试", "event": "test_patch_context", "summary": "源码与测试已预读，直接请求测试补丁",
+                       "details": {"read_files": sorted(paths), "initial_changed_files": len(self._initial_changes)}})
+        return self._generate_patch(question, history, steps, paths)
 
     def run(self, question, history=None):
         self._initial_changes = self.tools.editor.changes() if self.tools.editor is not None else {}
