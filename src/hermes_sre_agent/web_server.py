@@ -488,8 +488,10 @@ class ReviewJobs:
             result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e),
                                      allow_sandbox=allow_sandbox, on_trace=lambda e: self._trace(job_id, e),
                                      history_search=history_search).run(question, history)
-            self._update(job_id, status="completed", answer=result["answer"], steps=result["steps"])
-            self._trace(job_id, {"stage": "完成", "event": "completed", "summary": "审查任务完成",
+            blocked = result.get("outcome") == "blocked"
+            self._update(job_id, status="blocked" if blocked else "completed", answer=result["answer"], steps=result["steps"])
+            self._trace(job_id, {"stage": "停止" if blocked else "完成", "event": "blocked" if blocked else "completed",
+                                 "summary": "审查已安全停止，保留已有证据" if blocked else "审查任务完成",
                                  "details": {"tool_calls": len(result["steps"])}})
         except ModelConfigurationError:
             self._update(job_id, status="failed", message="请在 Hermes 的 .env 中填写有效的 HERMES_BASE_URL、HERMES_API_KEY 和 HERMES_MODEL，然后重启服务。")

@@ -252,6 +252,8 @@ Python 名称可能经 import ... as ... 重命名；若搜索不到定义，先
 
 
 class CodeReviewAgent:
+    PROTOCOL_RETRIES = 2
+
     def __init__(self, root, client, on_event=None, max_tool_calls=10, allow_sandbox=False, editor=None, on_trace=None, history_search=None):
         self.tools = SourceTools(root)
         self.tools.editor = editor
@@ -324,13 +326,29 @@ class CodeReviewAgent:
         try:
             instruction = parse_json_reply(reply)
         except ModelRequestError:
-            if has_source and not reply.lstrip().startswith(("{", "```json")):
+            if has_source and not reply.lstrip().startswith(("{", "[", "```")):
                 return reply.strip(), None
             return None, None
         if instruction.get("type") == "final":
             answer = instruction.get("answer")
             return (answer.strip() if has_source and isinstance(answer, str) and answer.strip() else None), instruction
         return None, instruction
+
+    @staticmethod
+    def _tool_request_error(instruction):
+        """只校验协议外壳，不执行或猜测工具参数，不扩大工具权限。"""
+        if instruction is None:
+            return "invalid_json", "请返回一个完整 JSON 对象，不能返回数组、截断 JSON 或 Markdown 代码。"
+        if instruction.get("type") != "tool_call":
+            return "invalid_type", "当前取证阶段的工具请求 type 必须是 tool_call。"
+        if not isinstance(instruction.get("tool"), str) or not instruction["tool"].strip():
+            return "invalid_tool_name", "tool 必须是已提供工具的非空名称字符串。"
+        if instruction["tool"] not in {"list_files", "file_outline", "read_file", "search_code", "resolve_symbol",
+                                       "search_history", "edit_file", "create_file", "run_tests"}:
+            return "unknown_tool", "tool 不在已有工具列表中，不允许 Shell、删除或自行批准等操作。"
+        if not isinstance(instruction.get("arguments", {}), dict):
+            return "invalid_arguments", "arguments 必须是 JSON 对象，不能是字符串、数组或 null。"
+        return None
 
     @staticmethod
     def _with_risk(answer):
@@ -694,6 +712,34 @@ class CodeReviewAgent:
         steps, has_source = [], False
         read_paths, premature_finals = set(), 0
         tool_limit, recovery_used = self.max_tool_calls, False
+        protocol_retries = 0
+
+        def correct_protocol(reply, error):
+            nonlocal protocol_retries
+            if protocol_retries >= self.PROTOCOL_RETRIES:
+                self.on_trace({"stage": "协议", "event": "protocol_retry_exhausted",
+                               "summary": "工具请求格式经两次纠正仍不合法，安全停止并保留已有结果",
+                               "details": {"error_kind": error[0], "retries": protocol_retries,
+                                           "tool_calls": len(steps)}})
+                return False
+            protocol_retries += 1
+            self.on_event({"message": f"工具请求格式不正确，正在让模型修正 · {protocol_retries}/{self.PROTOCOL_RETRIES}", "kind": "stage"})
+            self.on_trace({"stage": "协议", "event": "protocol_retry", "summary": "反馈协议错误，要求模型重发合法请求",
+                           "details": {"error_kind": error[0], "retry": protocol_retries,
+                                       "max_retries": self.PROTOCOL_RETRIES, "remaining_calls": tool_limit - len(steps)}})
+            # 错误回复只作为模型纠错上下文，不执行，也不写入持久日志。
+            messages.extend([{"role": "assistant", "content": reply[:8000]},
+                             {"role": "user", "content": "协议校验失败，本条请求未执行，也没有修改任何文件。" + error[1] +
+                              '\n正确结构示例：{"type":"tool_call","tool":"read_file","arguments":{"path":"项目内实际存在的相对路径"}}。'
+                              "请修正刚才的请求，保留原任务目标；不要重放之前已成功执行的修改。"
+                              "只能使用已提供的工具，权限、已读文件限制和工具总预算保持不变。"}])
+            return True
+
+        def protocol_stopped():
+            reason = "模型工具请求格式经两次自动纠正仍不合法，本轮已安全停止；之前成功的工具结果已保留。"
+            if self.tools.editor is not None:
+                return self._blocked_repair(steps, reason)
+            return {"outcome": "blocked", "steps": steps, "answer": reason + "\n\n" + self._fallback_report(steps)}
 
         def recover_blocker(reply, reason):
             nonlocal tool_limit, recovery_used
@@ -718,7 +764,10 @@ class CodeReviewAgent:
                                    "sandbox_enabled": self.tools.sandbox is not None,
                                    "initial_changed_files": len(self._initial_changes),
                                    "repair_workspace": self.tools.editor is not None}})
-        for _ in range(max(14, self.max_tool_calls + 4) + (6 if self.tools.editor is not None else 0)):
+        base_rounds = max(14, self.max_tool_calls + 4) + (6 if self.tools.editor is not None else 0)
+        for round_index in range(base_rounds + self.PROTOCOL_RETRIES):
+            if round_index >= base_rounds + protocol_retries:
+                break
             if len(steps) >= tool_limit:
                 break
             reply = self.client.complete(messages)
@@ -762,15 +811,18 @@ class CodeReviewAgent:
                 self.on_trace({"stage": "结论", "event": "final", "summary": "模型提交审查结论",
                                "details": {"reason": self._safe_reason(instruction), "tool_calls": len(steps)}})
                 return {"answer": self._with_risk(answer), "steps": steps}
-            if instruction is None or instruction.get("type") == "final":
+            if instruction is not None and instruction.get("type") == "final":
                 self.on_trace({"stage": "协议", "event": "invalid_reply", "summary": "模型回答不符合当前取证条件，要求继续读取源码",
                                "details": {"has_source": has_source, "tool_calls": len(steps)}})
                 messages.extend([{"role": "assistant", "content": reply},
                                  {"role": "user", "content": "请先用 read_file 读取源码，再给出符合约定的最终回答。"}])
                 continue
+            error = self._tool_request_error(instruction)
+            if error:
+                if correct_protocol(reply, error):
+                    continue
+                return protocol_stopped()
             name, args = instruction.get("tool"), instruction.get("arguments", {})
-            if instruction.get("type") != "tool_call" or not isinstance(name, str) or not isinstance(args, dict):
-                raise ModelRequestError("模型返回的工具请求格式不正确，请重试。")
             step = {"tool": name, "arguments": args}
             if name == "run_tests" and self.tools.sandbox is not None:
                 self.on_event({"message": "正在创建沙箱并运行 Python 测试（最长 60 秒）", "kind": "tool"})

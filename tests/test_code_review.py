@@ -2,18 +2,22 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from hermes_sre_agent.code_review import CodeReviewAgent, SourceTools
 from hermes_sre_agent.model_client import ModelRequestError
+from hermes_sre_agent.repair import ChangeSet, RepairWorkflow
 
 
 class ScriptedClient:
     def __init__(self, replies):
         self.replies = iter(replies)
         self.messages = []
+        self.calls = 0
 
     def complete(self, messages):
         self.messages = list(messages)
+        self.calls += 1
         return json.dumps(next(self.replies), ensure_ascii=False)
 
 
@@ -138,6 +142,113 @@ class CodeReviewTests(unittest.TestCase):
         client = ScriptedClient([{"type": "final", "answer": "代码没有 bug。"}] * 14)
         with self.assertRaises(ModelRequestError):
             CodeReviewAgent(self.root, client).run("检查")
+
+    def test_malformed_tool_envelope_is_corrected_without_using_tool_budget(self):
+        malformed = [
+            {"type": "tool_call", "tool": "read_file", "arguments": None},
+            {"type": "tool_call", "tool": "read_file", "arguments": '{"path":"main.py"}'},
+            {"type": "tool_call", "tool": "read_file", "arguments": []},
+            {"type": "tool_call", "arguments": {}},
+            {"type": "tool_call", "tool": 42, "arguments": {}},
+            {"type": "wrong", "tool": "read_file", "arguments": {}},
+            {"type": "tool_call", "tool": "run_shell", "arguments": {"command": "敏感标记"}},
+        ]
+        for bad in malformed:
+            with self.subTest(bad=bad):
+                client = ScriptedClient([bad,
+                    {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+                    {"type": "final", "answer": "已读取 main.py，除数为零时出错。"}])
+                trace = []
+                agent = CodeReviewAgent(self.root, client, max_tool_calls=1, on_trace=trace.append)
+                with patch.object(agent.tools, "call", wraps=agent.tools.call) as execute:
+                    result = agent.run("检查")
+                execute.assert_called_once_with("read_file", {"path": "main.py"})
+                self.assertEqual(len(result["steps"]), 1)
+                self.assertEqual(client.calls, 3)
+                self.assertEqual(sum(e["event"] == "protocol_retry" for e in trace), 1)
+                self.assertNotIn("敏感标记", json.dumps(trace, ensure_ascii=False))
+                self.assertTrue(any("本条请求未执行" in m["content"] for m in client.messages))
+
+    def test_broken_json_can_be_corrected(self):
+        replies = iter(['{"type":"tool_call",',
+                        '{"type":"tool_call","tool":"read_file","arguments":{"path":"main.py"}}',
+                        '{"type":"final","answer":"已读取代码。"}'])
+        with patch.object(ScriptedClient, "complete", side_effect=lambda _: next(replies)):
+            result = CodeReviewAgent(self.root, ScriptedClient([])).run("检查")
+        self.assertEqual(len(result["steps"]), 1)
+
+    def test_protocol_retries_exhaust_without_executing_or_dropping_evidence(self):
+        bad = {"type": "tool_call", "tool": "read_file", "arguments": None}
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}}, bad, bad, bad])
+        trace = []
+        result = CodeReviewAgent(self.root, client, on_trace=trace.append).run("检查")
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(len(result["steps"]), 1)
+        self.assertEqual(client.calls, 4)
+        self.assertIn("main.py", result["answer"])
+        self.assertEqual(sum(e["event"] == "protocol_retry" for e in trace), 2)
+        self.assertEqual(sum(e["event"] == "protocol_retry_exhausted" for e in trace), 1)
+
+    def test_protocol_retry_budget_does_not_reset_after_valid_tool(self):
+        bad = {"type": "bad"}
+        client = ScriptedClient([bad, {"type": "tool_call", "tool": "list_files", "arguments": {}},
+                                bad, {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}}, bad])
+        result = CodeReviewAgent(self.root, client).run("检查")
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(client.calls, 5)
+
+    def test_protocol_recovery_does_not_relax_edit_permissions(self):
+        original = (self.root / "main.py").read_text()
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "edit_file", "arguments": None},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "main.py", "old_text": "return 1 / x", "new_text": "return 0"}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "final", "answer": "只读审查完成。"}])
+        result = CodeReviewAgent(self.root, client).run("检查")
+        self.assertIn("error", result["steps"][0])
+        self.assertEqual((self.root / "main.py").read_text(), original)
+
+    def test_existing_patch_survives_protocol_exhaustion_and_still_requires_validation(self):
+        original = (self.root / "main.py").read_text()
+        (self.root / "test_main.py").write_text("def test_placeholder():\n    assert True\n")
+        bad = {"type": "tool_call", "tool": "read_file", "arguments": None}
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "main.py", "old_text": "return 1 / x", "new_text": "return 0 if x == 0 else 1 / x"}}, bad, bad, bad])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
+                "status": "finished", "exit_code": 1, "output": "测试失败"}) as tests:
+            result, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修复", [])
+        tests.assert_called_once()
+        self.assertFalse(proposal.public()["can_apply"])
+        self.assertEqual((self.root / "main.py").read_text(), original)
+        self.assertEqual(sum(s["tool"] == "edit_file" for s in result["steps"]), 1)
+
+    def test_provider_failure_is_not_mistaken_for_protocol_error(self):
+        client = ScriptedClient([])
+        with patch.object(client, "complete", side_effect=ModelRequestError("供应商失败")) as complete:
+            with self.assertRaises(ModelRequestError):
+                CodeReviewAgent(self.root, client).run("检查")
+        complete.assert_called_once()
+
+    def test_failed_edit_then_malformed_request_recovers_with_last_tool_slot(self):
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "main.py", "old_text": "不存在的旧代码", "new_text": "return 0"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": []},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "main.py", "old_text": "return 1 / x", "new_text": "return 0 if x == 0 else 1 / x"}},
+            {"type": "final", "answer": "临时副本已修改，尚需验证审批。"},
+        ])
+        changes = ChangeSet(self.root)
+        result = CodeReviewAgent(self.root, client, editor=changes, max_tool_calls=3).run("修复")
+        self.assertEqual(len(result["steps"]), 3)
+        self.assertIn("error", result["steps"][1])
+        self.assertIn("result", result["steps"][2])
+        self.assertIn("main.py", changes.changes())
 
     def test_reading_has_line_limit(self):
         (self.root / "long.py").write_text("\n".join(["x = 1"] * 300), encoding="utf-8")
