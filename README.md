@@ -192,7 +192,7 @@ Hermes 会得出有依据的根因和最小回退方案，然后明确停在“�
 - `*-report.md`：面向人的中文事件报告
 - `*-trajectory.json`：工具调用、结果、状态转换、诊断与操作记录，可用于后续评测
 
-可用 `hermes --list-tools` 查看工具白名单；`--scenario api_500` 可查看“证据不足时安全停止”的行为。
+可用 `hermes --list-tools` 查看工具白名单；`--scenario api_500` 可查看“HTTP 500 与明确的缺失环境变量日志关联诊断”的行为。若 5xx 没有对应日志或容器证据，Hermes 仍会安全停止，不会编造根因。
 
 ## Docker 故障实验环境
 
@@ -286,6 +286,14 @@ ScenarioBackend（可复现演示） / LiveReadOnlyBackend（本机只读）
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+```
+
+审批弹窗和历史方案中的代码差异使用红色表示删除、绿色表示新增，同时展示新旧行号和增删数量。源码按纯文本显示，不会作为 HTML 执行。修改前端后刷新页面即可，无需重启服务。
+
+前端差异展示的回归测试使用 Node.js 内置测试工具，无需安装 npm 依赖：
+
+```bash
+node --test tests/test_diff_ui.cjs
 ```
 
 测试覆盖：端到端慢接口诊断、模型自主工具选择、伪造证据拦截、危险重启工具拦截、代码审查输入限制和证据不足时的安全停止。

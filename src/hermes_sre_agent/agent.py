@@ -78,17 +78,25 @@ class SREAgent:
         logs = logs if isinstance(logs, dict) else {}
         changes = changes if isinstance(changes, dict) else {}
         config = config if isinstance(config, dict) else {}
-        latency = health.get("latency_ms", 0)
+        status_code = health.get("status_code")
+        latency = SREAgent._number(health.get("latency_ms"))
         gpu_used, gpu_total = gpu.get("memory_used_mb"), gpu.get("memory_total_mb")
-        vram_ratio = gpu_used / gpu_total if isinstance(gpu_used, (int, float)) and isinstance(gpu_total, (int, float)) and gpu_total else 0
+        gpu_used_number = SREAgent._number(gpu_used)
+        gpu_total_number = SREAgent._number(gpu_total)
+        vram_ratio = (gpu_used_number / gpu_total_number
+                      if gpu_used_number is not None and gpu_total_number is not None and gpu_total_number > 0 else 0)
         config_changes = config.get("changes", [])
         batch_change = next((item for item in config_changes if item.get("key") == "batch_size"), None)
         log_text = "\n".join(logs.get("lines", []))
         container = next((item for item in containers if item.get("name") == container_name), {})
+        container_status = str(container.get("status", "未知"))
+        container_running = container_status.lower() == "running"
+        cpu_percent = SREAgent._number(metrics.get("cpu_percent"))
+        memory_percent = SREAgent._number(metrics.get("memory_used_percent"))
 
         observations = [
             f"系统 CPU 为 {metrics.get('cpu_percent', '未采集')}%；内存为 {metrics.get('memory_used_percent', '未采集')}%。",
-            f"健康检查返回 HTTP {health.get('status_code')}，耗时 {latency} ms。",
+            f"健康检查返回 HTTP {status_code if status_code is not None else '未采集'}，耗时 {latency if latency is not None else '未采集'} ms。",
             f"GPU 显存为 {gpu.get('memory_used_mb', '未采集')} / {gpu.get('memory_total_mb', '未采集')} MB（{vram_ratio:.0%}）。",
             f"容器 {container_name} 状态为 {container.get('status', '未知')}。",
         ]
@@ -99,7 +107,69 @@ class SREAgent:
             f"Git 最近变更：{changes.get('summary', '未发现最近变更')}",
         ]
 
-        if batch_change and latency >= 1000 and vram_ratio >= 0.85:
+        # 先判定可用性故障。HTTP 状态和容器生命周期均是直接观察结果，不能被后续的性能假设覆盖。
+        if isinstance(status_code, int) and status_code >= 500:
+            if container and not container_running:
+                return Diagnosis(
+                    observations=observations,
+                    evidence=evidence + [f"容器状态：{container_name}={container_status}"],
+                    hypothesis="服务健康检查失败且目标容器未处于运行状态。",
+                    verification="HTTP 5xx 与容器非运行状态相互印证；尚未执行重启。",
+                    root_cause=f"容器 {container_name} 当前状态为 {container_status}，服务不可用。",
+                    confidence="高",
+                    remediation=[
+                        "检查容器退出码、启动日志和最近部署参数。",
+                        f"确认原因后，申请批准再启动或回滚 {container_name}。",
+                        "恢复后重新检查 HTTP 状态、延迟和错误日志。",
+                    ],
+                    risk="启动或回滚会改变服务状态，必须经人工批准。",
+                    needs_approval=True,
+                )
+
+            missing = SREAgent._missing_environment_variable(log_text)
+            if missing:
+                return Diagnosis(
+                    observations=observations,
+                    evidence=evidence + [f"应用日志：缺少必需环境变量 {missing}"],
+                    hypothesis="应用因必需环境变量缺失而无法完成请求处理。",
+                    verification="健康检查返回 5xx，且应用日志明确报告缺少同一项启动配置。",
+                    root_cause=f"服务缺少必需环境变量 {missing}，导致健康检查返回 HTTP {status_code}。",
+                    confidence="高",
+                    remediation=[
+                        f"核对部署密钥或配置中 {missing} 的来源与作用域。",
+                        "按变更流程补齐正确配置，避免在日志或命令行暴露值。",
+                        "经人工批准后滚动发布，并重新检查健康状态与日志。",
+                    ],
+                    risk="补齐环境变量并发布会改变运行配置，必须经人工批准。",
+                    needs_approval=True,
+                )
+
+            return Diagnosis(
+                observations=observations,
+                evidence=evidence,
+                hypothesis="服务端返回 5xx，但现有日志没有可验证的具体异常原因。",
+                verification="HTTP 状态证明服务失败；其余采集结果不足以归因到代码、配置或基础设施。",
+                root_cause=f"未确定——健康检查返回 HTTP {status_code}，缺少可关联的服务端错误证据。",
+                confidence="低",
+                remediation=["扩大同一请求时间窗口内的应用错误日志和链路追踪后重新诊断。"],
+                risk="未提出任何变更操作。",
+                needs_approval=False,
+            )
+
+        if isinstance(status_code, int) and 400 <= status_code < 500:
+            return Diagnosis(
+                observations=observations,
+                evidence=evidence,
+                hypothesis="健康检查端点返回客户端错误，可能是地址、路由或访问策略不匹配。",
+                verification="4xx 证明请求已到达服务边界，但不能单凭状态码确定是鉴权、路由还是探针配置问题。",
+                root_cause=f"未确定——健康检查返回 HTTP {status_code}，需核对健康检查 URL、路由与访问策略。",
+                confidence="低",
+                remediation=["确认部署探针使用的 URL、认证要求及服务实际暴露的健康检查路由。"],
+                risk="未提出任何变更操作。",
+                needs_approval=False,
+            )
+
+        if batch_change and latency is not None and latency >= 1000 and vram_ratio >= 0.85:
             before, after = batch_change["before"], batch_change["after"]
             return Diagnosis(
                 observations=observations,
@@ -117,6 +187,32 @@ class SREAgent:
                 needs_approval=True,
             )
 
+        if latency is not None and latency >= 1000 and cpu_percent is not None and cpu_percent >= 90:
+            return Diagnosis(
+                observations=observations,
+                evidence=evidence + [f"系统指标：CPU={cpu_percent}%"],
+                hypothesis="高延迟与主机 CPU 接近饱和同时出现，可能存在 CPU 竞争或并发过高。",
+                verification="当前指标支持资源瓶颈假设，但缺少按进程、按时间窗口的 CPU 证据，不能确认唯一根因。",
+                root_cause="未确定——检测到接口高延迟和主机 CPU 压力，需要进一步定位占用进程。",
+                confidence="中",
+                remediation=["采集服务进程和相邻容器的 CPU 使用率、请求并发数及排队时间。"],
+                risk="未提出任何变更操作。",
+                needs_approval=False,
+            )
+
+        if latency is not None and latency >= 1000 and memory_percent is not None and memory_percent >= 90:
+            return Diagnosis(
+                observations=observations,
+                evidence=evidence + [f"系统指标：内存={memory_percent}%"],
+                hypothesis="高延迟与主机内存压力同时出现，可能发生内存争用或回收。",
+                verification="当前指标支持资源压力假设，但没有进程级内存、OOM 或回收日志，不能确认唯一根因。",
+                root_cause="未确定——检测到接口高延迟和主机内存压力，需要进一步定位占用进程。",
+                confidence="中",
+                remediation=["采集进程级内存、内核 OOM/回收日志和容器内存限制后重新诊断。"],
+                risk="未提出任何变更操作。",
+                needs_approval=False,
+            )
+
         return Diagnosis(
             observations=observations,
             evidence=evidence,
@@ -128,3 +224,18 @@ class SREAgent:
             risk="未提出任何操作。",
             needs_approval=False,
         )
+
+    @staticmethod
+    def _number(value: Any) -> Optional[float]:
+        """仅接受真实数值，避免把字符串、布尔值或缺失字段当作资源证据。"""
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _missing_environment_variable(log_text: str) -> Optional[str]:
+        """从明确的错误日志中提取变量名，不猜测日志未出现的部署配置。"""
+        marker = "missing required environment variable "
+        position = log_text.lower().find(marker)
+        if position < 0:
+            return None
+        candidate = log_text[position + len(marker):].split()[0] if log_text[position + len(marker):].split() else ""
+        return candidate if candidate.replace("_", "").isalnum() and candidate.upper() == candidate else None

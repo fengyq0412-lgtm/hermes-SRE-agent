@@ -43,12 +43,13 @@ class RunResult:
     state_history: List[str]
 
     def trajectory(self) -> Dict[str, Any]:
+        root_cause = self.diagnosis.root_cause.strip()
         return {
             "incident_id": self.incident.incident_id,
             "user_query": self.incident.user_query,
             "steps": [call.as_dict() for call in self.calls],
-            "root_cause": self.diagnosis.root_cause,
+            "root_cause": root_cause,
             "actions": [],
-            "success": bool(self.diagnosis.root_cause),
+            "success": bool(root_cause) and not root_cause.startswith("未确定"),
             "state_history": self.state_history,
         }

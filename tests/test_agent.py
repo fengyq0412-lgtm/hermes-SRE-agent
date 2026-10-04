@@ -34,10 +34,51 @@ class AgentWorkflowTests(unittest.TestCase):
         self.assertEqual(calls["service_health"].arguments["url"], "http://localhost:8000/health")
         self.assertEqual(calls["docker_logs"].arguments["container"], "legal-agent")
 
-    def test_ambiguous_evidence_stops_safely(self):
+    def test_api_500_with_explicit_configuration_error_is_diagnosed(self):
         run = SREAgent(ScenarioBackend("api_500")).investigate("why is it failing?")
+        self.assertIn("MODEL_ENDPOINT", run.diagnosis.root_cause)
+        self.assertEqual(run.diagnosis.confidence, "高")
+        self.assertTrue(run.diagnosis.needs_approval)
+
+    def test_generic_5xx_stops_without_inventing_a_root_cause(self):
+        class GenericErrorBackend:
+            def read(self, tool, **_):
+                values = {
+                    "system_metrics": {"cpu_percent": 20, "memory_used_percent": 40},
+                    "gpu_metrics": {},
+                    "docker_list": [{"name": "legal-agent", "status": "running"}],
+                    "service_health": {"status_code": 503, "latency_ms": 30},
+                    "docker_logs": {"lines": ["ERROR request failed"]},
+                    "git_recent_changes": {"summary": "No correlated deploy found."},
+                    "config_diff": {"changes": []},
+                }
+                return values[tool]
+
+        run = SREAgent(GenericErrorBackend()).investigate("why is it failing?")
+
         self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))
         self.assertFalse(run.diagnosis.needs_approval)
+        self.assertFalse(run.trajectory()["success"])
+
+    def test_stopped_container_and_5xx_is_diagnosed_before_performance_hypotheses(self):
+        class StoppedContainerBackend:
+            def read(self, tool, **_):
+                values = {
+                    "system_metrics": {"cpu_percent": 99, "memory_used_percent": 95},
+                    "gpu_metrics": {},
+                    "docker_list": [{"name": "legal-agent", "status": "exited"}],
+                    "service_health": {"status_code": 502, "latency_ms": 5},
+                    "docker_logs": {"lines": []},
+                    "git_recent_changes": {"summary": "No correlated deploy found."},
+                    "config_diff": {"changes": []},
+                }
+                return values[tool]
+
+        run = SREAgent(StoppedContainerBackend()).investigate("service unavailable")
+
+        self.assertIn("状态为 exited", run.diagnosis.root_cause)
+        self.assertEqual(run.diagnosis.confidence, "高")
+        self.assertTrue(run.diagnosis.needs_approval)
 
     def test_optional_collection_failure_does_not_hide_valid_health_evidence(self):
         class PartialBackend:

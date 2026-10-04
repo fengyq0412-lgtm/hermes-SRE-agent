@@ -19,7 +19,8 @@ main{min-width:0;display:flex;flex-direction:column;height:100dvh}.topbar{height
 .progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}
 .usage{font-size:.76rem;color:#60746e;margin:12px 0;line-height:1.7}.usage strong{color:#315e50}.top-actions{display:flex;align-items:center;gap:15px}.session-usage{font-size:.76rem;color:#60746e;white-space:nowrap}
 .message details pre{overflow:auto;max-height:420px;background:#eef2f4;padding:12px;color:#344752;border-radius:8px;white-space:pre}.message .send+.text-button{margin-left:10px}
-.approval-dialog{width:min(760px,94vw);max-height:86dvh;overflow:auto}.approval-dialog pre{overflow:auto;max-height:300px;background:#eef2f4;padding:14px;border-radius:8px;font-size:.78rem}.approval-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.approval-dialog p{line-height:1.7}
+.approval-dialog{width:min(1000px,94vw);max-height:86dvh;overflow:auto}.approval-dialog pre{overflow:auto;max-height:300px;background:#eef2f4;padding:14px;border-radius:8px;font-size:.78rem}.approval-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.approval-dialog p{line-height:1.7}
+.diff-view{margin-top:12px;color:#263942}.diff-legend{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:.75rem;margin-bottom:8px}.diff-badge{border-radius:4px;padding:3px 7px;font-weight:600}.diff-added{background:#daf5e5;color:#165e39}.diff-removed{background:#ffe3e3;color:#8b252c}.diff-hint{color:#64747f}.diff-scroll{overflow:auto;max-height:440px;border:1px solid #d9e2e6;border-radius:8px;background:#fff}.diff-table{border-collapse:collapse;min-width:100%;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;tab-size:4}.diff-table th{position:sticky;top:0;z-index:1;background:#edf2f5;color:#536672;text-align:left;font-weight:500;padding:6px 10px;white-space:nowrap;border-bottom:1px solid #d9e2e6}.diff-table td{padding:0;vertical-align:top}.diff-table .diff-number{min-width:48px;padding:0 10px;text-align:right;color:#61737e;border-right:1px solid #52677618;user-select:none;white-space:nowrap}.diff-table .diff-sign{width:26px;min-width:26px;text-align:center;font-weight:700;user-select:none}.diff-table .diff-code{width:100%;padding:0 14px 0 4px;white-space:pre}.diff-table .diff-meta td{background:#f5f7f9;color:#657784;padding:4px 12px;white-space:pre}.diff-table .diff-hunk td{background:#e8f0fa;color:#305b82;padding:6px 12px;white-space:pre}.diff-table .diff-added .diff-number{background:#c8ecd7}.diff-table .diff-removed .diff-number{background:#f8d1d4}.diff-scroll:focus-visible{outline:3px solid #3caa8b;outline-offset:2px}
 details{border-left:2px solid #dde6e2;padding-left:13px;margin:16px 0;font-size:.8rem;color:#75847e}summary{cursor:pointer}details ul{list-style:none;padding:0;line-height:2}.error{color:#a13a3a;background:#fff0ef;border-radius:8px;padding:12px;white-space:pre-wrap}
 .trace-list{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}.trace-item{border:1px solid #e0e9e5;background:#f8fbf9;border-radius:8px;padding:10px 12px;color:#314b43}.trace-head{font-weight:600}.trace-meta{display:block;color:#71857b;font-size:.75rem;margin:3px 0}.trace-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#536a60;font-size:.74rem}.trace-path{overflow-wrap:anywhere;color:#61786c;font-size:.75rem}
 .composer-wrap{padding:12px 32px 19px;background:linear-gradient(transparent,#fafbfc 14%);flex-shrink:0}.composer{max-width:848px;margin:auto;background:white;border:1px solid #cfd9dd;border-radius:14px;box-shadow:0 5px 22px #233a4a07;padding:15px 16px 11px}.composer textarea{width:100%;min-height:56px;max-height:160px;border:0;outline:none;resize:vertical;color:#23313b;line-height:1.7;background:transparent}.composer-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}.composer-footer span{font-size:.75rem;color:var(--muted)}.send{border:0;background:#173b32;color:white;border-radius:8px;padding:8px 16px;font-size:.875rem}.footnote{text-align:center;font-size:.75rem;color:#88969e;margin-top:9px}.notice{font-size:.875rem;color:#934c22;margin:12px 0}.hidden,[hidden]{display:none!important}
@@ -119,6 +120,39 @@ function renderMarkdown(container, text) {
   if(bullet)list.append(node);else container.append(node);
  }
 }
+function parseDiff(text) {
+ // 按 unified diff 的分块计数解析，避免把源码中的 --- / +++ 误认为文件头。
+ const rows=[];let oldLine=0,newLine=0,oldLeft=0,newLeft=0,inHunk=false,added=0,removed=0;
+ const lines=String(text||'').split(/\r?\n/);if(lines.at(-1)==='')lines.pop();
+ for(const line of lines){
+  const hunk=line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+  if(hunk){oldLine=Number(hunk[1]);newLine=Number(hunk[3]);oldLeft=Number(hunk[2]??1);newLeft=Number(hunk[4]??1);inHunk=true;rows.push({kind:'hunk',text:line});continue;}
+  if(!inHunk||line.startsWith('\\')){rows.push({kind:'meta',text:line});continue;}
+  const sign=line[0];
+  if(sign==='-'&&oldLeft>0){rows.push({kind:'removed',old:oldLine++,new:'',sign,text:line.slice(1)});oldLeft--;removed++;}
+  else if(sign==='+'&&newLeft>0){rows.push({kind:'added',old:'',new:newLine++,sign,text:line.slice(1)});newLeft--;added++;}
+  else if(sign===' '&&oldLeft>0&&newLeft>0){rows.push({kind:'context',old:oldLine++,new:newLine++,sign,text:line.slice(1)});oldLeft--;newLeft--;}
+  else rows.push({kind:'meta',text:line});
+  if(oldLeft===0&&newLeft===0)inHunk=false;
+ }
+ return {rows,added,removed};
+}
+function renderDiff(file) {
+ // 源码始终使用 textContent，不把 HTML、脚本或模型输出解释为页面标签。
+ const diff=parseDiff(file.diff),view=element('div','diff-view'),legend=element('div','diff-legend');
+ legend.append(element('span','diff-badge diff-removed','− '+diff.removed+' 删除'),element('span','diff-badge diff-added','+ '+diff.added+' 新增'),element('span','diff-hint','左列：原行号 · 右列：新行号'));
+ const scroll=element('div','diff-scroll');scroll.tabIndex=0;scroll.setAttribute('role','region');scroll.setAttribute('aria-label',file.path+' 修改对照，可横向滚动');
+ const table=element('table','diff-table');table.setAttribute('aria-label',file.path+' 代码差异');
+ const head=element('thead'),header=element('tr');
+ for(const title of ['原行号','新行号','变更','代码']){const cell=element('th','',title);cell.setAttribute('scope','col');header.append(cell);}head.append(header);
+ const body=element('tbody');
+ for(const row of diff.rows){const tr=element('tr','diff-'+row.kind);
+  if(row.kind==='hunk'||row.kind==='meta'){const cell=element('td','',row.text);cell.colSpan=4;tr.append(cell);}
+  else tr.append(element('td','diff-number',row.old),element('td','diff-number',row.new),element('td','diff-sign',row.sign),element('td','diff-code',row.text));
+  body.append(tr);
+ }
+ table.append(head,body);scroll.append(table);view.append(legend,scroll);return view;
+}
 function renderChat() {
  const c=chat();$('project-title').textContent=state.selected?.name||'选择一个项目开始';$('welcome').hidden=!!c.turns.length;$('messages').replaceChildren();
  const picker=$('conversation-select');picker.replaceChildren(element('option','','新对话'));picker.firstChild.value='';
@@ -154,7 +188,7 @@ function renderChat() {
   if(turn.proposal){
    const proposal=turn.proposal;
    box.append(element('p','', '修复方案 · '+(proposal.state==='expired'?'已失效，请重新生成':turn.status==='interrupted'?'执行已中断，请核对结果':turn.status==='completed'&&proposal.state==='applied'?'已批准并完成':turn.status==='rejected'?'已拒绝':turn.status==='running'?'已批准，正在继续核对':'等待人工审核')));
-   for(const file of proposal.files){const detail=element('details');detail.append(element('summary','',fileLabel(file)));detail.append(element('pre','',file.diff));box.append(detail);}
+   for(const file of proposal.files){const detail=element('details');detail.append(element('summary','',fileLabel(file)));detail.append(renderDiff(file));box.append(detail);}
    box.append(element('p','usage','沙箱验证：'+proposal.validation.status+' · 退出码 '+proposal.validation.exit_code));
    if(turn.status==='awaiting_review'){
     const reopen=element('button','text-button','查看审批请求');reopen.onclick=()=>{state.approvalDismissed.delete(turn.id);showApproval(turn);};box.append(reopen);
@@ -179,7 +213,7 @@ function showApproval(turn){
  const validation=turn.proposal.validation;
  $('approval-title').textContent=turn.proposal.can_apply?'需要你批准代码修改':'候选修改尚未就绪';
  const body=$('approval-body');body.replaceChildren();body.append(element('p','',validation.status==='finished'&&validation.exit_code===0?'候选修改已通过本次沙箱测试。请检查代码和测试的差异；批准后才会创建或修改原项目文件。':'候选修改已生成，但尚未通过沙箱验证。请查看具体原因，原项目尚未修改。'));
- for(const file of turn.proposal.files){const detail=element('details');detail.open=true;detail.append(element('summary','',fileLabel(file)));detail.append(element('pre','',file.diff));body.append(detail);}
+ for(const file of turn.proposal.files){const detail=element('details');detail.open=true;detail.append(element('summary','',fileLabel(file)));detail.append(renderDiff(file));body.append(detail);}
  body.append(element('p','usage','沙箱验证：'+validation.status+' · 退出码 '+validation.exit_code));
  if(validation.summary)body.append(element('p',validation.failure_kind==='passed'?'usage':'notice',validation.summary));
  if(validation.test_agent?.summary)body.append(element('p','notice',validation.test_agent.summary));
