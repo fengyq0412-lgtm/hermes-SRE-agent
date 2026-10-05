@@ -19,6 +19,7 @@ class Element {
 }
 const context = vm.createContext({ document: { createElement: tag => new Element(tag) } });
 vm.runInContext(script.slice(script.indexOf('function element('), script.indexOf('async function api(')) +
+                script.slice(script.indexOf('function statusMeta('), script.indexOf('function freshChat(')) +
                 script.slice(script.indexOf('function parseDiff('), script.indexOf('function renderChat(')), context);
 const parse = text => JSON.parse(JSON.stringify(context.parseDiff(text)));
 const walk = node => [node, ...node.children.flatMap(walk)];
@@ -27,6 +28,23 @@ test('整个页面脚本语法有效，审批与历史记录共用高亮组件',
   assert.doesNotThrow(() => new vm.Script(script));
   assert.equal((script.match(/detail\.append\(renderDiff\(file\)\)/g) || []).length, 2);
   assert.ok(!script.includes("element('pre','',file.diff)"));
+});
+
+test('任务状态给出明确下一步，运行中和待审批状态可区分', () => {
+  assert.deepEqual(Array.from(context.statusMeta('running')), ['正在分析', 'Agent 正在读取证据、形成结论或验证候选修改。']);
+  assert.deepEqual(Array.from(context.statusMeta('awaiting_review')), ['等待你的审核', '候选补丁与测试结果已准备好，批准后才会写回项目。']);
+  assert.deepEqual(Array.from(context.statusMeta('unknown')), ['正在提交', '正在创建本轮任务。']);
+  assert.ok(html.includes('id="jump-latest"'));
+  assert.ok(script.includes("aria-live','polite'"));
+});
+
+test('历史会话使用可删除的列表，输入操作区保持稳定对齐', () => {
+  assert.ok(html.includes('id="conversations"'));
+  assert.ok(!html.includes('id="conversation-select"'));
+  assert.ok(html.includes('grid-template-columns:minmax(0,1fr) auto'));
+  assert.ok(script.includes("method=body===undefined?'GET':'POST'"));
+  assert.ok(script.includes("'DELETE'"));
+  assert.ok(script.includes('window.confirm'));
 });
 
 test('多块修改的原行号、新行号和增删统计正确', () => {

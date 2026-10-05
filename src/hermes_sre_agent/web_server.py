@@ -4,6 +4,7 @@ import copy
 import errno
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -30,6 +31,39 @@ from .repair import RepairWorkflow
 
 MAX_REQUEST_BYTES = 16_384
 RESTART_WAIT_SECONDS = 5
+SERVER_LOGGER = logging.getLogger("hermes.web")
+
+
+def configure_server_logging(path, also_console=True):
+    """将 Hermes 自身的运行事件写入私有文件和启动终端，不记录用户正文。"""
+    target = Path(path)
+    if target.is_symlink() or target.parent.is_symlink():
+        raise OSError("服务日志路径不能是符号链接")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    os.fchmod(descriptor, 0o600)
+    stream = os.fdopen(descriptor, "a", encoding="utf-8")
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%dT%H:%M:%S%z")
+    file_handler = logging.StreamHandler(stream)
+    handlers = [file_handler]
+    if also_console:
+        handlers.append(logging.StreamHandler())
+    for handler in handlers:
+        handler.setFormatter(formatter)
+
+    for handler in SERVER_LOGGER.handlers:
+        handler.close()
+        owned_stream = getattr(handler, "_hermes_owned_stream", None)
+        if owned_stream is not None:
+            owned_stream.close()
+    SERVER_LOGGER.handlers.clear()
+    SERVER_LOGGER.setLevel(logging.INFO)
+    SERVER_LOGGER.propagate = False
+    file_handler._hermes_owned_stream = stream
+    SERVER_LOGGER.addHandler(file_handler)
+    if also_console:
+        SERVER_LOGGER.addHandler(handlers[1])
+    return target
 
 
 def restartable_listener(port):
@@ -285,6 +319,35 @@ class ReviewJobs:
                 raise KeyError("会话不存在或不属于当前项目。")
             return {"id": conversation_id, "turns": [self.get(j["id"]) for j in turns]}
 
+    def delete_conversation(self, project_id, conversation_id):
+        """删除已结束会话及其持久化轨迹；活动任务必须先完成或由用户等待。"""
+        self.registry.resolve(project_id)
+        with self.lock:
+            turns = [job for job in self.jobs.values()
+                     if job["project_id"] == project_id and job.get("conversation_id") == conversation_id]
+            if not turns:
+                raise KeyError("会话不存在或不属于当前项目。")
+            active = [job["id"] for job in turns if job["status"] in {"queued", "running", "awaiting_review"}]
+            if active:
+                raise ValueError("会话仍有正在执行或待审批的任务，暂不能删除。")
+            for job in turns:
+                self.proposals.pop(job["id"], None)
+                self.jobs.pop(job["id"], None)
+            self.store.delete_conversation(project_id, conversation_id)
+            if self.trace_dir:
+                trace_root = self.trace_dir.resolve()
+                for job in turns:
+                    try:
+                        trace_path = (trace_root / f"{job['id']}.jsonl").resolve()
+                        if trace_path.parent == trace_root:
+                            trace_path.unlink(missing_ok=True)
+                    except OSError:
+                        # 会话主体已删除；遗留只读或被占用的运行日志可由用户稍后手动清理。
+                        pass
+            SERVER_LOGGER.info("event=conversation_deleted project_id=%s conversation_id=%s turns=%s",
+                               project_id, conversation_id, len(turns))
+            return {"id": conversation_id, "deleted_turns": len(turns)}
+
     def _persist(self, job_id):
         try:
             self.jobs[job_id].pop("persistence_error", None)
@@ -311,6 +374,8 @@ class ReviewJobs:
                    "stage": entry["stage"], "event": entry["event"],
                    "summary": entry["summary"], "details": entry.get("details", {})}
             trace.append(row)
+            SERVER_LOGGER.info("event=review_trace job_id=%s stage=%s trace_event=%s",
+                               job_id, row["stage"], row["event"])
             self._persist(job_id)
             if not self.trace_dir or job.get("trace_error"):
                 return
@@ -580,6 +645,21 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
         except OSError:
             self._send_json(400, {"error": "无法访问或保存此项目，请检查目录权限。"})
 
+    def do_DELETE(self):
+        parsed = urlparse(self.path)
+        if not self._valid_request(api=parsed.path.startswith("/api/")):
+            return
+        try:
+            segments = parsed.path.split("/")
+            if len(segments) != 4 or segments[:3] != ["", "api", "conversations"] or not segments[3]:
+                self._send_json(404, {"error": "接口不存在。"})
+                return
+            project_id = parse_qs(parsed.query).get("project_id", [""])[0]
+            conversation_id = parsed.path.rsplit("/", 1)[-1]
+            self._send_json(200, self.jobs.delete_conversation(project_id, conversation_id))
+        except (OSError, ValueError, KeyError) as exc:
+            self._send_json(400, {"error": str(exc) or "会话不可删除。"})
+
     def _send_json(self, status, body):
         self._send_bytes(status, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
@@ -592,6 +672,10 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
+        if self.path.startswith("/api/"):
+            # 只记路由、状态码与响应大小；查询参数和请求正文可能包含项目或用户数据。
+            SERVER_LOGGER.info("event=api_response method=%s route=%s status=%s bytes=%s",
+                               self.command, urlparse(self.path).path, status, len(body))
 
     def log_message(self, *_args):
         """不将用户问题或项目路径写入默认 HTTP 日志。"""
@@ -600,11 +684,19 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
 def main():
     load_dotenv()
     port = int(os.environ.get("HERMES_WEB_PORT", "8765"))
-    HermesRequestHandler.registry = ProjectRegistry(storage=Path.cwd() / ".hermes" / "projects.json")
+    runtime_dir = Path.cwd() / ".hermes"
+    HermesRequestHandler.registry = ProjectRegistry(storage=runtime_dir / "projects.json")
     server = bind_web_server(port)
-    HermesRequestHandler.jobs = ReviewJobs(HermesRequestHandler.registry, trace_dir=Path.cwd() / ".hermes" / "traces",
-                                         conversation_path=Path.cwd() / ".hermes" / "conversations.sqlite3")
+    try:
+        log_path = configure_server_logging(runtime_dir / "server.log")
+    except OSError as exc:
+        log_path = None
+        print(f"Hermes 后端日志无法初始化：{exc}", file=sys.stderr, flush=True)
+    HermesRequestHandler.jobs = ReviewJobs(HermesRequestHandler.registry, trace_dir=runtime_dir / "traces",
+                                         conversation_path=runtime_dir / "conversations.sqlite3")
     print(f"Hermes 控制台：http://127.0.0.1:{port}", flush=True)
+    if log_path:
+        SERVER_LOGGER.info("event=server_started port=%s log_path=%s", port, log_path)
     print("在页面点击「打开项目」选择文件夹；模型配置读取当前目录 .env。", flush=True)
     def stop_on_term(_signum, _frame):
         raise KeyboardInterrupt
@@ -617,6 +709,7 @@ def main():
             print("\n控制台已停止。")
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
+        SERVER_LOGGER.info("event=server_stopped port=%s", port)
         server.server_close()
         HermesRequestHandler.jobs.executor.shutdown(wait=False, cancel_futures=True)
     return 0

@@ -69,6 +69,15 @@ class ConversationStore:
         with sqlite3.connect(self.path) as db:
             return [json.loads(row[0]) for row in db.execute("SELECT body FROM turns ORDER BY created, id")]
 
+    def delete_conversation(self, project_id, conversation_id):
+        """删除一个项目会话的持久记录；调用方负责先停止活动任务。"""
+        if not self.path:
+            return 0
+        with sqlite3.connect(self.path) as db:
+            cursor = db.execute("DELETE FROM turns WHERE project_id = ? AND conversation_id = ?",
+                                (project_id, conversation_id))
+            return cursor.rowcount
+
 
 class ContextMemory:
     def __init__(self, recent_turns=3, max_chars=24000):

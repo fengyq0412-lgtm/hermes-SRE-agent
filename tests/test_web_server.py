@@ -1,5 +1,6 @@
 import errno
 import json
+import logging
 import os
 import tempfile
 import unittest
@@ -9,10 +10,39 @@ import time
 from types import SimpleNamespace
 
 from hermes_sre_agent.web_server import (HermesRequestHandler, ProjectRegistry, ReviewJobs,
-                                         bind_web_server, browse_directories, main, restartable_listener)
+                                         SERVER_LOGGER, bind_web_server, browse_directories,
+                                         configure_server_logging, main, restartable_listener)
 
 
 class WebConsoleTests(unittest.TestCase):
+    def test_backend_log_is_private_and_excludes_request_content(self):
+        old_handlers = list(SERVER_LOGGER.handlers)
+        old_level, old_propagate = SERVER_LOGGER.level, SERVER_LOGGER.propagate
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                path = configure_server_logging(Path(directory) / ".hermes" / "server.log", also_console=False)
+                SERVER_LOGGER.info("event=api_response method=POST route=/api/reviews status=202 bytes=42")
+                for handler in SERVER_LOGGER.handlers:
+                    handler.flush()
+                content = path.read_text(encoding="utf-8")
+                mode = path.stat().st_mode & 0o777
+        finally:
+            for handler in SERVER_LOGGER.handlers:
+                handler.close()
+                owned_stream = getattr(handler, "_hermes_owned_stream", None)
+                if owned_stream is not None:
+                    owned_stream.close()
+            SERVER_LOGGER.handlers.clear()
+            SERVER_LOGGER.setLevel(old_level)
+            SERVER_LOGGER.propagate = old_propagate
+            for handler in old_handlers:
+                SERVER_LOGGER.addHandler(handler)
+
+        self.assertIn("event=api_response", content)
+        self.assertIn("route=/api/reviews", content)
+        self.assertNotIn("用户问题", content)
+        self.assertEqual(mode, 0o600)
+
     def test_routing_distinguishes_advice_from_explicit_execution(self):
         cases = [
             ("请帮我修复 main.py 的边界错误", '{"mode":"review"}', "repair"),
@@ -102,6 +132,49 @@ class WebConsoleTests(unittest.TestCase):
             (root / "file.py").touch()
             result = browse_directories(directory)
             self.assertEqual([item["name"] for item in result["directories"]], ["project"])
+
+    def test_completed_conversation_can_be_deleted_with_its_trace_and_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            traces = root / ".hermes" / "traces"
+            jobs = ReviewJobs(registry, trace_dir=traces,
+                              conversation_path=root / ".hermes" / "conversations.sqlite3")
+            job = {"id": "a" * 32, "project_id": project_id, "conversation_id": "b" * 32,
+                   "created_at": time.time(), "question": "已经完成的问题", "status": "completed",
+                   "answer": "已完成", "events": [], "trace": [], "steps": [], "usage": {},
+                   "mode": "review", "proposal": None}
+            try:
+                jobs.jobs[job["id"]] = job
+                jobs.store.save(job)
+                traces.mkdir(parents=True)
+                trace_path = traces / f"{job['id']}.jsonl"
+                trace_path.write_text('{"event":"completed"}\n', encoding="utf-8")
+
+                deleted = jobs.delete_conversation(project_id, job["conversation_id"])
+
+                self.assertEqual(deleted, {"id": job["conversation_id"], "deleted_turns": 1})
+                self.assertNotIn(job["id"], jobs.jobs)
+                self.assertEqual(jobs.store.load(), [])
+                self.assertFalse(trace_path.exists())
+            finally:
+                jobs.executor.shutdown(wait=True)
+
+    def test_active_conversation_cannot_be_deleted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, client_factory=lambda: object())
+            job = {"id": "c" * 32, "project_id": project_id, "conversation_id": "d" * 32,
+                   "created_at": time.time(), "question": "仍在运行的问题", "status": "running"}
+            try:
+                jobs.jobs[job["id"]] = job
+                with self.assertRaisesRegex(ValueError, "暂不能删除"):
+                    jobs.delete_conversation(project_id, job["conversation_id"])
+                self.assertIn(job["id"], jobs.jobs)
+            finally:
+                jobs.executor.shutdown(wait=True)
 
     def test_followup_keeps_same_project_context_only(self):
         def fake_run(_self, question, history):
