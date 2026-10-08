@@ -16,7 +16,7 @@
 main{min-width:0;display:flex;flex-direction:column;height:100dvh}.topbar{height:76px;flex-shrink:0;border-bottom:1px solid var(--line);padding:0 32px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:#fff}.title{font-size:.9rem;font-weight:650}.breadcrumb{font-size:.8rem;color:var(--muted);margin-bottom:3px}.text-button{border:1px solid var(--line);background:white;color:#596b74;border-radius:7px;padding:7px 12px;font-size:.8rem}.text-button:hover:not(:disabled){border-color:#9db8ad;background:#f5faf7}
 .scroll{flex:1;overflow:auto;scroll-behavior:smooth}.conversation{max-width:920px;margin:auto;padding:30px 36px 50px}.welcome{padding:70px 0 38px;max-width:690px;margin:auto}.welcome .mark{width:48px;height:48px;font-size:30px;margin-bottom:26px}h1{font-size:2rem;letter-spacing:-.04em;font-weight:630;margin:0 0 13px}.welcome p{color:var(--muted);line-height:1.9;margin:0 0 28px}.suggestions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.suggestion{text-align:left;border:1px solid var(--line);border-radius:10px;padding:17px;background:white;font-size:.875rem;color:#455762;line-height:1.6}.suggestion:hover{border-color:#94b6a7;background:#f5faf7}.suggestion small{display:block;color:var(--muted);margin-top:6px}
 .message{margin-bottom:30px}.message.user{margin-left:auto;max-width:85%;background:#edf1f3;padding:13px 18px;border-radius:14px 14px 3px 14px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}.assistant-label{display:flex;gap:9px;align-items:center;font-size:.875rem;font-weight:650;margin-bottom:14px}.assistant-label .mark{width:24px;height:24px;border-radius:6px;font-size:15px}.answer{line-height:1.9;overflow-wrap:anywhere}.answer h2,.answer h3{font-size:1.1rem;margin:24px 0 10px}.answer p{margin:8px 0}.answer ul{padding-left:22px}.answer pre{overflow:auto;background:#eef2f4;border:1px solid var(--line);padding:16px;border-radius:8px;line-height:1.6;font-size:.85rem}.answer code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#edf1f3;border-radius:3px;padding:1px 4px;font-size:.85em}.answer pre code{padding:0;background:none;font-size:inherit}
-.progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}.task-state{display:flex;align-items:flex-start;gap:9px;margin:0 0 14px;padding:10px 12px;border:1px solid #dce6e2;border-radius:9px;background:#f7faf8;color:#405a51;font-size:.8rem;line-height:1.55}.task-state-dot{width:8px;height:8px;flex:0 0 auto;border-radius:50%;margin-top:4px;background:#71838a}.task-state strong{display:block;font-weight:650}.task-state small{display:block;color:#718078;margin-top:2px}.task-state.running .task-state-dot,.task-state.queued .task-state-dot{background:#428c71;animation:pulse 1.4s infinite}.task-state.awaiting_review{border-color:#e7c98b;background:#fff9ec;color:#76591d}.task-state.awaiting_review .task-state-dot,.task-state.needs_input .task-state-dot{background:#be8524}.task-state.failed,.task-state.blocked{border-color:#ebc4c1;background:#fff5f4;color:#8a413a}.task-state.failed .task-state-dot,.task-state.blocked .task-state-dot{background:#b84c43}.task-state.completed,.task-state.applied{border-color:#c7dfd1;background:#f1faf4}.task-state.completed .task-state-dot,.task-state.applied .task-state-dot{background:#45896d}
+.progress{font-size:.875rem;color:var(--muted);line-height:1.9;margin:10px 0}.progress.active::before{content:"";display:inline-block;width:9px;height:9px;background:#428c71;border-radius:50%;margin-right:9px;animation:pulse 1.4s infinite}@keyframes pulse{50%{opacity:.25}}.task-state{display:flex;align-items:flex-start;gap:9px;margin:0 0 14px;padding:10px 12px;border:1px solid #dce6e2;border-radius:9px;background:#f7faf8;color:#405a51;font-size:.8rem;line-height:1.55}.task-state-dot{width:8px;height:8px;flex:0 0 auto;border-radius:50%;margin-top:4px;background:#71838a}.task-state strong{display:block;font-weight:650}.task-state small{display:block;color:#718078;margin-top:2px}.task-state.running .task-state-dot,.task-state.queued .task-state-dot{background:#428c71;animation:pulse 1.4s infinite}.task-state.awaiting_review{border-color:#e7c98b;background:#fff9ec;color:#76591d}.task-state.awaiting_review .task-state-dot,.task-state.needs_input .task-state-dot{background:#be8524}.task-state.failed,.task-state.blocked{border-color:#ebc4c1;background:#fff5f4;color:#8a413a}.task-state.failed .task-state-dot,.task-state.blocked .task-state-dot{background:#b84c43}.task-state.completed,.task-state.applied{border-color:#c7dfd1;background:#f1faf4}.task-state.completed .task-state-dot,.task-state.applied .task-state-dot{background:#45896d}.task-actions{display:flex;gap:8px;margin:10px 0 16px}.task-actions .text-button{font-size:.78rem}
 .usage{font-size:.76rem;color:#60746e;margin:12px 0;line-height:1.7}.usage strong{color:#315e50}.top-actions{display:flex;align-items:center;gap:15px}.session-usage{font-size:.76rem;color:#60746e;white-space:nowrap}
 .message details pre{overflow:auto;max-height:420px;background:#eef2f4;padding:12px;color:#344752;border-radius:8px;white-space:pre}.message .send+.text-button{margin-left:10px}
 .approval-dialog{width:min(1000px,94vw);max-height:86dvh;overflow:auto}.approval-dialog pre{overflow:auto;max-height:300px;background:#eef2f4;padding:14px;border-radius:8px;font-size:.78rem}.approval-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px}.approval-dialog p{line-height:1.7}
@@ -62,6 +62,11 @@ const state = {projects:[], selected:null, chats:new Map(), directory:null, poll
 function element(tag, cls, text) { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; }
 async function api(path, body, method=body===undefined?'GET':'POST') {
  const r=await fetch(path,{method,headers:{'X-Hermes-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+ const contentType=r.headers.get('content-type')||'';
+ if(!contentType.includes('application/json')){
+  if(method==='DELETE'&&r.status===501)throw new Error('当前 hermes-web 尚未重启，暂不支持删除历史会话。请重启服务后重试。');
+  throw new Error('服务返回了非 JSON 响应（HTTP '+r.status+'）。请刷新页面或重启 hermes-web 后重试。');
+ }
  const data=await r.json(); if(!r.ok)throw new Error(data.error||'请求失败'); return data;
 }
 function notice(text) {$('notice').textContent=text||'';$('notice').hidden=!text;}
@@ -200,6 +205,13 @@ function renderChat() {
   if(turn.status==='blocked')box.append(element('p','notice','修改尚未完成。请查看原因，可继续补充目标或缩小范围。'));
   if(turn.status==='needs_input')box.append(element('p','notice','需要你确认业务规则。直接回复下方问题，即可沿用本会话继续修改。'));
   if(turn.status==='interrupted')box.append(element('p','notice','上次执行已中断，可基于已保存的对话继续。'));
+  if(turn===c.turns.at(-1)&&turn.id&&['queued','running'].includes(turn.status)){
+   const actions=element('div','task-actions');const stop=element('button','text-button',turn.cancelBusy?'正在中止…':'中止任务');stop.type='button';stop.disabled=!!turn.cancelBusy;stop.onclick=()=>cancelTurn(turn);actions.append(stop);box.append(actions);
+  }
+  if(turn===c.turns.at(-1)&&turn.status==='interrupted'&&c.hydrated&&!c.busy){
+   const actions=element('div','task-actions');const resume=element('button','text-button','继续任务');resume.type='button';resume.onclick=()=>{const applied=turn.proposal?.state==='applied';c.resumeMode=applied?'review':turn.mode||'auto';$('question').value=applied?'继续核对刚才已写回的修改，并总结结果。':'继续完成刚才中止的任务，沿用原需求和已保存的上下文。';$('chat-form').requestSubmit();};actions.append(resume);box.append(actions);
+  }
+  if(turn.cancelError)box.append(element('p','error',turn.cancelError));
   if(turn.persistence_error)box.append(element('p','error',turn.persistence_error));
   if(turn.pollError)box.append(element('p','notice',turn.pollError));
   if(turn.context){const context=turn.context;const detail=element('details');detail.open=!!turn.contextOpen;detail.ontoggle=()=>{turn.contextOpen=detail.open;};
@@ -221,7 +233,7 @@ function renderChat() {
   for(const step of turn.steps||[]){if(step.tool==='run_tests'&&step.result){const detail=element('details');detail.append(element('summary','','查看沙箱测试输出'));detail.append(element('pre','',step.result.output||'没有测试输出'));box.append(detail);}}
   if(turn.proposal){
    const proposal=turn.proposal;
-   box.append(element('p','', '修复方案 · '+(proposal.state==='expired'?'已失效，请重新生成':turn.status==='interrupted'?'执行已中断，请核对结果':turn.status==='completed'&&proposal.state==='applied'?'已批准并完成':turn.status==='rejected'?'已拒绝':turn.status==='running'?'已批准，正在继续核对':'等待人工审核')));
+   box.append(element('p','', '修复方案 · '+(proposal.state==='expired'?'已失效，请重新生成':turn.status==='interrupted'&&proposal.state==='applied'?'修改已写回，后续核对已中止':turn.status==='interrupted'?'执行已中断，请核对结果':turn.status==='completed'&&proposal.state==='applied'?'已批准并完成':turn.status==='rejected'?'已拒绝':turn.status==='running'?'已批准，正在继续核对':'等待人工审核')));
    for(const file of proposal.files){const detail=element('details');detail.append(element('summary','',fileLabel(file)));detail.append(renderDiff(file));box.append(detail);}
    box.append(element('p','usage','沙箱验证：'+proposal.validation.status+' · 退出码 '+proposal.validation.exit_code));
    if(turn.status==='awaiting_review'){
@@ -291,21 +303,33 @@ $('question').onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.p
 function updateJumpLatest() {const scroll=$('scroll');$('jump-latest').hidden=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<120;}
 $('jump-latest').onclick=()=>{$('scroll').scrollTop=$('scroll').scrollHeight;};
 $('scroll').addEventListener('scroll',updateJumpLatest);
+async function cancelTurn(turn) {
+ if(!turn.id||turn.cancelBusy)return;const projectId=turn.projectId;const c=chat(projectId);
+ turn.cancelBusy=true;turn.cancelError=null;if(state.selected?.id===projectId)renderChat();
+ try{const job=await api('/api/reviews/'+encodeURIComponent(turn.id)+'/cancel',{project_id:projectId});
+  Object.assign(turn,{status:job.status,mode:job.mode,answer:job.answer,events:job.events,trace:job.trace,proposal:job.proposal,usage:job.usage,cancelled:true});
+  c.parent=job.id;c.busy=false;state.usage=job.session_usage;
+  loadConversationList(projectId).then(()=>{if(state.selected?.id===projectId)renderChat();}).catch(()=>{});
+ }catch(error){turn.cancelError='中止失败：'+error.message;}
+ finally{turn.cancelBusy=false;if(state.selected?.id===projectId)renderChat();}
+}
 async function monitor(projectId, turn) {
  const c=chat(projectId);
  try {
-  const job=await api('/api/reviews/'+turn.id);turn.pollError=null;turn.context=job.context;turn.persistence_error=job.persistence_error;turn.backup_path=job.backup_path;turn.mode=job.mode;turn.events=job.events;turn.trace=job.trace;turn.trace_path=job.trace_path;turn.trace_error=job.trace_error;turn.usage=job.usage;turn.steps=job.steps;turn.status=job.status;turn.proposal=job.proposal;state.usage=job.session_usage;
+  const job=await api('/api/reviews/'+turn.id);if(turn.cancelled&&['queued','running'].includes(job.status))return;
+  turn.pollError=null;turn.context=job.context;turn.persistence_error=job.persistence_error;turn.backup_path=job.backup_path;turn.mode=job.mode;turn.events=job.events;turn.trace=job.trace;turn.trace_path=job.trace_path;turn.trace_error=job.trace_error;turn.usage=job.usage;turn.steps=job.steps;turn.status=job.status;turn.proposal=job.proposal;state.usage=job.session_usage;
   if(['completed','blocked','needs_input','interrupted','awaiting_review','applied','rejected'].includes(job.status)){turn.answer=job.answer;c.parent=job.id;c.busy=false;}
   else if(job.status==='failed'){turn.error=job.message;c.parent=job.id;c.busy=false;}
   if(state.selected?.id===projectId)renderChat();
   if(c.busy)setTimeout(()=>monitor(projectId,turn),1200);
- }catch(e){turn.pollError='暂时无法读取任务状态：'+e.message+'。正在重试，服务重启后请刷新页面。';c.busy=true;if(state.selected?.id===projectId)renderChat();setTimeout(()=>monitor(projectId,turn),3000);}
+ }catch(e){if(turn.cancelled)return;turn.pollError='暂时无法读取任务状态：'+e.message+'。正在重试，服务重启后请刷新页面。';c.busy=true;if(state.selected?.id===projectId)renderChat();setTimeout(()=>monitor(projectId,turn),3000);}
 }
 $('chat-form').onsubmit=async e=>{
  e.preventDefault();if(!state.selected)return notice('请先打开项目。');const c=chat();if(!c.hydrated||c.busy||c.loading||c.turns.some(t=>t.status==='awaiting_review'))return;
  const question=$('question').value.trim();if(!question)return notice('请输入想检查的问题。');if(question.length>4000)return notice('问题请控制在 4000 字以内。');
- const projectId=state.selected.id;const turn={question,projectId,events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
- try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent});turn.id=data.id;c.conversationId=data.conversation_id;rememberConversation(projectId,c.conversationId);monitor(projectId,turn);loadConversationList(projectId).then(()=>{if(state.selected?.id===projectId)renderChat();}).catch(()=>{});}
+ const mode=c.resumeMode||'auto';c.resumeMode=null;
+ const projectId=state.selected.id;const turn={question,projectId,status:'queued',events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
+ try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent,mode});turn.id=data.id;c.conversationId=data.conversation_id;rememberConversation(projectId,c.conversationId);renderChat();monitor(projectId,turn);loadConversationList(projectId).then(()=>{if(state.selected?.id===projectId)renderChat();}).catch(()=>{});}
  catch(error){turn.error=error.message;c.busy=false;if(state.selected?.id===projectId)renderChat();}
 };
 api('/api/projects').then(data=>{state.projects=data.projects;let preferred;try{preferred=localStorage.getItem('hermes-project');}catch(_ignored){}if(state.projects.length)selectProject(state.projects.find(p=>p.id===preferred)||state.projects[0]);else renderChat();renderProjects();}).catch(e=>notice(e.message));

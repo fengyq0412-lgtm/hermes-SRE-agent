@@ -83,6 +83,26 @@ class FilePermissionTests(unittest.TestCase):
         self.assertEqual((self.root / "main.py").read_text(), "x = 1\n")
         self.assertEqual(changes.changes(), {})
 
+    def test_invalid_indentation_is_rejected_and_batch_is_rolled_back(self):
+        source = "def store(message):\n    for item in message:\n        if item == 'bad':\n            return {'success': False}\n    return {'success': True}\n"
+        (self.root / "main.py").write_text(source, encoding="utf-8")
+        changes = ChangeSet(self.root)
+        bad = "    return {'success': False}\nreturn {'success': True}\n"
+        with self.assertRaisesRegex(ValueError, "Python 语法无效"):
+            changes.apply_edits([{"path": "main.py", "old_text":
+                                  "            return {'success': False}\n    return {'success': True}\n",
+                                  "new_text": bad}])
+        self.assertEqual((self.root / "main.py").read_text(encoding="utf-8"), source)
+        self.assertEqual(changes.changes(), {})
+
+        with self.assertRaisesRegex(ValueError, "Python 语法无效"):
+            changes.edit_file("main.py", "            return {'success': False}", "    return {'success': False}")
+        self.assertEqual((self.root / "main.py").read_text(encoding="utf-8"), source)
+
+        with self.assertRaisesRegex(ValueError, "Python 语法无效"):
+            PatchProposal({"main.py": (source.encode(), source.replace(
+                "            return {'success': False}", "    return {'success': False}").encode())}, PASS)
+
     def test_apply_failure_rolls_back_creation_without_deleting_other_files(self):
         (self.root / "keep.txt").write_text("user data")
         proposal = PatchProposal({"tests/test_new.py": (None, b"x = 2\n"),

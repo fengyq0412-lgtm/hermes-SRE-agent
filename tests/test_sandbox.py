@@ -3,9 +3,12 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event, Timer
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from hermes_sre_agent.code_review import SourceTools
-from hermes_sre_agent.sandbox import DockerSandbox
+from hermes_sre_agent.sandbox import DockerSandbox, SandboxCancelled
 
 
 class SandboxTests(unittest.TestCase):
@@ -25,6 +28,51 @@ class SandboxTests(unittest.TestCase):
                 SourceTools(root).call("run_tests", {})
             with self.assertRaises(ValueError):
                 DockerSandbox(root).run_tests("../outside")
+
+    def test_cancel_running_sandbox_stops_process_and_cleans_container(self):
+        cancelled = Event()
+        processes, timers = [], []
+
+        class FakeProcess:
+            def __init__(self):
+                reader, self.writer = os.pipe()
+                self.stdout = os.fdopen(reader, "rb", buffering=0)
+                self.killed = False
+
+            def poll(self):
+                return -9 if self.killed else None
+
+            def kill(self):
+                self.killed = True
+                os.close(self.writer)
+
+            def wait(self, timeout=None):
+                return -9
+
+        def launch(_command, **_kwargs):
+            process = FakeProcess()
+            processes.append(process)
+            timer = Timer(.02, cancelled.set)
+            timers.append(timer)
+            timer.start()
+            return process
+
+        def snapshot(destination):
+            (Path(destination) / "test_main.py").write_text("def test_ok(): pass\n")
+            return 1
+
+        with tempfile.TemporaryDirectory() as root:
+            sandbox = DockerSandbox(root, cancel_event=cancelled)
+            with patch.object(sandbox, "snapshot", side_effect=snapshot), \
+                    patch("hermes_sre_agent.sandbox.subprocess.run",
+                          return_value=SimpleNamespace(returncode=0)) as command, \
+                    patch("hermes_sre_agent.sandbox.subprocess.Popen", side_effect=launch):
+                with self.assertRaises(SandboxCancelled):
+                    sandbox.run_tests("test_main.py")
+            self.assertTrue(processes[0].killed)
+            self.assertEqual(command.call_args_list[-1].args[0][:3], ["docker", "rm", "-f"])
+        for timer in timers:
+            timer.join(timeout=1)
 
 
 @unittest.skipUnless(os.environ.get("HERMES_SANDBOX_INTEGRATION") == "1", "需要显式开启真实 Docker 测试")

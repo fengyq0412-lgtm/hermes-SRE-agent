@@ -4,3 +4,4 @@ pytest-asyncio==0.24.0
 fastapi==0.141.1
 pydantic==2.13.5
 httpx==0.28.1
+python-pptx==1.0.2

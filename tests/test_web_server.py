@@ -1,10 +1,12 @@
 import errno
+import io
 import json
 import logging
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 import time
 from types import SimpleNamespace
@@ -114,6 +116,59 @@ class WebConsoleTests(unittest.TestCase):
         handler.headers = {"Host": "untrusted.example:8765", "X-Hermes-Token": handler.session_token}
         self.assertFalse(handler._valid_request(api=True))
         self.assertEqual(responses, [403, 403, 403])
+
+    def test_cancel_running_job_keeps_interrupted_result_and_allows_followup(self):
+        started, release = Event(), Event()
+
+        class SlowClient:
+            last_usage = None
+
+            def complete(self, _messages):
+                started.set()
+                release.wait(5)
+                return '{"type":"final","answer":"迟到的回答"}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, client_factory=SlowClient,
+                              conversation_path=Path(directory) / "conversations.sqlite3")
+            try:
+                created = jobs.create(project_id, "检查代码", mode="review")
+                self.assertTrue(started.wait(2), "模型调用未启动")
+                stopped = jobs.cancel(project_id, created["id"])
+                self.assertEqual(stopped["status"], "interrupted")
+                self.assertIn("可在当前会话继续", stopped["answer"])
+                with self.assertRaisesRegex(ValueError, "暂不能删除"):
+                    jobs.delete_conversation(project_id, created["conversation_id"])
+                release.set()
+                jobs.futures[created["id"]].result(timeout=2)
+                self.assertEqual(jobs.get(created["id"])["status"], "interrupted")
+                self.assertNotIn("迟到的回答", jobs.get(created["id"])["answer"])
+                with patch.object(jobs.executor, "submit"):
+                    continued = jobs.create(project_id, "继续检查", parent_id=created["id"], mode="review")
+                self.assertEqual(continued["conversation_id"], created["conversation_id"])
+                self.assertEqual(jobs.jobs[continued["id"]]["history"][-1]["content"].splitlines()[0],
+                                 "[本轮实际状态：interrupted]")
+            finally:
+                release.set()
+                jobs.executor.shutdown(wait=True)
+
+    def test_cancel_route_requires_project_and_returns_updated_job(self):
+        handler = object.__new__(HermesRequestHandler)
+        handler.server = SimpleNamespace(server_port=8765)
+        handler.path = "/api/reviews/job-1/cancel"
+        payload = b'{"project_id":"project-1"}'
+        handler.headers = {"Host": "127.0.0.1:8765", "X-Hermes-Token": handler.session_token,
+                           "Content-Type": "application/json", "Content-Length": str(len(payload))}
+        handler.rfile = io.BytesIO(payload)
+        handler.jobs = SimpleNamespace(cancel=lambda project_id, job_id: {
+            "project_id": project_id, "id": job_id, "status": "interrupted"})
+        responses = []
+        handler._send_json = lambda status, body: responses.append((status, body))
+        handler.do_POST()
+        self.assertEqual(responses, [(200, {"project_id": "project-1", "id": "job-1",
+                                           "status": "interrupted"})])
 
     def test_project_selection_persists_without_env_configuration(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HERMES_PROJECT_ROOTS": "/not/existing"}):

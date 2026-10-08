@@ -47,6 +47,19 @@ test('历史会话使用可删除的列表，输入操作区保持稳定对齐',
   assert.ok(script.includes('window.confirm'));
 });
 
+test('旧服务返回 HTML 时会提示重启，而不是暴露 JSON 解析错误', () => {
+  assert.ok(script.includes("method==='DELETE'&&r.status===501"));
+  assert.ok(script.includes('当前 hermes-web 尚未重启'));
+  assert.ok(script.includes('服务返回了非 JSON 响应'));
+});
+
+test('运行中可中止，同一会话可继续任务', () => {
+  assert.ok(script.includes("'中止任务'"));
+  assert.ok(script.includes("'继续任务'"));
+  assert.ok(script.includes("'/cancel'"));
+  assert.ok(script.includes("parent_id:c.parent,mode"));
+});
+
 test('多块修改的原行号、新行号和增删统计正确', () => {
   const diff = parse('--- a/main.py\n+++ b/main.py\n@@ -10,3 +10,4 @@\n same\n-old\n+new\n+extra\n tail\n@@ -30 +31 @@\n-before\n+after\n');
   assert.equal(diff.removed, 2);

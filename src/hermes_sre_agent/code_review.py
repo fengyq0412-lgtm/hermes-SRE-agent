@@ -254,13 +254,13 @@ Python 名称可能经 import ... as ... 重命名；若搜索不到定义，先
 class CodeReviewAgent:
     PROTOCOL_RETRIES = 2
 
-    def __init__(self, root, client, on_event=None, max_tool_calls=10, allow_sandbox=False, editor=None, on_trace=None, history_search=None):
+    def __init__(self, root, client, on_event=None, max_tool_calls=10, allow_sandbox=False, editor=None, on_trace=None, history_search=None, cancel_event=None):
         self.tools = SourceTools(root)
         self.tools.editor = editor
         self.tools.history_search = history_search
         if allow_sandbox:
             from .sandbox import DockerSandbox
-            self.tools.sandbox = DockerSandbox(root)
+            self.tools.sandbox = DockerSandbox(root, cancel_event=cancel_event)
         self.client = client
         self.on_event = on_event or (lambda event: None)
         self.on_trace = on_trace or (lambda entry: None)
@@ -482,6 +482,8 @@ class CodeReviewAgent:
         message = str(exc)
         if "补丁结构错误" in message:
             return "invalid_patch_schema"
+        if "Python 语法无效" in message:
+            return "invalid_python_syntax"
         if "新建协议错误" in message:
             return "missing_create_content"
         if "新建目标已存在" in message:
@@ -507,6 +509,7 @@ class CodeReviewAgent:
             "old_text_not_unique": "old_text 未在临时副本中精确且唯一地命中。",
             "unread_target": "模型试图修改尚未读取的源码文件。",
             "invalid_patch_schema": "模型补丁字段不符合协议，请区分新建 content 与修改 new_text。",
+            "invalid_python_syntax": "候选 Python 文件存在语法或缩进错误；请保留所属代码块的缩进并提交可解析的完整修改。",
             "missing_create_content": "新文件使用了修改协议；应提交完整 content，无需读取不存在的文件。",
             "create_target_exists": "新建目标已存在，禁止覆盖已有文件。",
             "unread_line_range": "模型指定的行号不在已读取的源码范围内。",

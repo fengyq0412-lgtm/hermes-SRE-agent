@@ -139,9 +139,10 @@ def empty_usage():
 class MeteredClient:
     """逐次记录模型调用；没有 usage 的响应单独计数。"""
 
-    def __init__(self, client, on_usage):
+    def __init__(self, client, on_usage, cancel_event=None):
         self.client = client
         self.on_usage = on_usage
+        self.cancel_event = cancel_event
 
     @property
     def last_finish_reason(self):
@@ -149,10 +150,19 @@ class MeteredClient:
 
     def complete(self, messages):
         # 每个审查任务拥有独立客户端，避免并发任务的用量互相覆盖。
+        if self.cancel_event and self.cancel_event.is_set():
+            raise TaskCancelled
         try:
-            return self.client.complete(messages)
+            result = self.client.complete(messages)
         finally:
             self.on_usage(getattr(self.client, "last_usage", None))
+        if self.cancel_event and self.cancel_event.is_set():
+            raise TaskCancelled
+        return result
+
+
+class TaskCancelled(Exception):
+    """用户已中止本轮；后台线程在当前阻塞调用返回后退出。"""
 
 
 class ProjectRegistry:
@@ -227,6 +237,8 @@ class ReviewJobs:
         self.registry = registry
         self.jobs = {}
         self.proposals = {}
+        self.cancel_events = {}
+        self.futures = {}
         self.lock = threading.RLock()
         self.total_usage = empty_usage()
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hermes-review")
@@ -284,11 +296,52 @@ class ReviewJobs:
                                  "trace_path": str(self.trace_dir / f"{job_id}.jsonl") if self.trace_dir else None,
                                  "history": history, "memory": memory, "context": context,
                                  "context_turns": turns, "usage": empty_usage()}
+            self.cancel_events[job_id] = threading.Event()
         self._trace(job_id, {"stage": "任务", "event": "created", "summary": "任务已创建，等待执行",
                              "details": {"requested_mode": mode, "sandbox_requested": allow_sandbox,
                                          "has_previous_context": bool(history)}})
-        self.executor.submit(self._run, job_id, project, question.strip(), history, allow_sandbox, mode, test_path)
+        self.futures[job_id] = self.executor.submit(
+            self._run, job_id, project, question.strip(), history, allow_sandbox, mode, test_path)
         return {"id": job_id, "conversation_id": conversation_id}
+
+    def cancel(self, project_id, job_id):
+        """立即封存本轮结果，并要求后台在当前阻塞调用结束后退出。"""
+        self.registry.resolve(project_id)
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if not job or job["project_id"] != project_id:
+                raise KeyError("任务不存在或不属于当前项目。")
+            if job["status"] not in {"queued", "running"}:
+                raise ValueError("任务已结束或正在等待审批，不能中止。")
+            self.cancel_events[job_id].set()
+            future = self.futures.get(job_id)
+            if future:
+                future.cancel()
+            applied = (job.get("proposal") or {}).get("state") == "applied"
+            note = ("任务已中止；已批准的修改已写回，后续核对停止。可在当前会话继续。" if applied else
+                    "任务已中止；未批准的候选修改不会写回。可在当前会话继续。")
+            job.update(status="interrupted", answer=(job.get("answer", "") + "\n\n" + note).strip())
+            job["events"].append({"message": "你已中止本轮任务", "kind": "stage"})
+            self._trace(job_id, {"stage": "停止", "event": "cancel_requested", "summary": "用户中止任务",
+                                 "details": {"writeback_applied": applied}})
+            return self.get(job_id)
+
+    def _check_cancelled(self, job_id):
+        event = self.cancel_events.get(job_id)
+        if event and event.is_set():
+            raise TaskCancelled
+
+    def _worker_trace(self, job_id, entry):
+        with self.lock:
+            self._check_cancelled(job_id)
+            self._trace(job_id, entry)
+
+    def _fail_job(self, job_id, message, event, summary):
+        with self.lock:
+            if self.cancel_events[job_id].is_set():
+                return
+            self.jobs[job_id].update(status="failed", message=message)
+            self._trace(job_id, {"stage": "失败", "event": event, "summary": summary, "details": {}})
 
     def get(self, job_id):
         with self.lock:
@@ -327,12 +380,15 @@ class ReviewJobs:
                      if job["project_id"] == project_id and job.get("conversation_id") == conversation_id]
             if not turns:
                 raise KeyError("会话不存在或不属于当前项目。")
-            active = [job["id"] for job in turns if job["status"] in {"queued", "running", "awaiting_review"}]
+            active = [job["id"] for job in turns if job["status"] in {"queued", "running", "awaiting_review"}
+                      or (self.futures.get(job["id"]) and not self.futures[job["id"]].done())]
             if active:
                 raise ValueError("会话仍有正在执行或待审批的任务，暂不能删除。")
             for job in turns:
                 self.proposals.pop(job["id"], None)
                 self.jobs.pop(job["id"], None)
+                self.cancel_events.pop(job["id"], None)
+                self.futures.pop(job["id"], None)
             self.store.delete_conversation(project_id, conversation_id)
             if self.trace_dir:
                 trace_root = self.trace_dir.resolve()
@@ -357,11 +413,13 @@ class ReviewJobs:
 
     def _update(self, job_id, **values):
         with self.lock:
+            self._check_cancelled(job_id)
             self.jobs[job_id].update(values)
             self._persist(job_id)
 
     def _event(self, job_id, event):
         with self.lock:
+            self._check_cancelled(job_id)
             self.jobs[job_id]["events"].append(event)
 
     def _trace(self, job_id, entry):
@@ -438,7 +496,7 @@ class ReviewJobs:
         if continue_work:
             self._trace(job_id, {"stage": "审批", "event": "approved", "summary": "人工批准，补丁已写回原项目",
                                  "details": {"file_count": len(proposal.changes)}})
-            self.executor.submit(self._continue_after_approval, job_id)
+            self.futures[job_id] = self.executor.submit(self._continue_after_approval, job_id)
         else:
             self._trace(job_id, {"stage": "审批", "event": "rejected", "summary": "人工拒绝，原项目未修改", "details": {}})
         return self.get(job_id)
@@ -478,6 +536,8 @@ class ReviewJobs:
         return mode, reason, source
 
     def _continue_after_approval(self, job_id):
+        if self.cancel_events[job_id].is_set():
+            return
         with self.lock:
             job = self.jobs[job_id]
             project = self.registry.resolve(job["project_id"])
@@ -488,54 +548,65 @@ class ReviewJobs:
             prior_turns = [{"id": j["id"], "question": j["question"], "answer": j.get("answer", ""), "status": j["status"]}
                            for j in self.jobs.values() if j.get("conversation_id") == job.get("conversation_id")]
         try:
-            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage))
+            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage),
+                                   self.cancel_events[job_id])
             question = ("用户已人工批准并写回这些文件：" + "、".join(files) +
                         "。请读取实际项目中的修改并给出最终中文结果，说明修改效果、沙箱测试范围与残余风险。"
                         "不要继续修改文件，也不要声称执行了新的测试。")
             history = [*previous_history, {"role": "user", "content": original_question},
                        {"role": "assistant", "content": old_answer[:8000]}]
             result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e),
-                                     max_tool_calls=4, on_trace=lambda e: self._trace(job_id, e),
-                                     history_search=lambda text: self.context_memory.search(prior_turns, text)).run(question, history)
+                                     max_tool_calls=4, on_trace=lambda e: self._worker_trace(job_id, e),
+                                     history_search=lambda text: self.context_memory.search(prior_turns, text),
+                                     cancel_event=self.cancel_events[job_id]).run(question, history)
             with self.lock:
+                self._check_cancelled(job_id)
                 job = self.jobs[job_id]
                 job.update(status="completed", answer=result["answer"],
                            steps=job["steps"] + result["steps"])
-            self._trace(job_id, {"stage": "完成", "event": "completed", "summary": "写回后核对完成",
+            self._worker_trace(job_id, {"stage": "完成", "event": "completed", "summary": "写回后核对完成",
                                  "details": {"tool_calls": len(result["steps"])}})
+        except TaskCancelled:
+            return
         except Exception:
-            self._update(job_id, status="completed", answer=old_answer +
-                         "\n\n修改已按人工批准写回；后续模型核对未完成，请查看上方 diff、沙箱测试和备份。")
-            self._trace(job_id, {"stage": "完成", "event": "verification_incomplete", "summary": "写回已完成，但后续模型核对未完成",
-                                 "details": {}})
+            with self.lock:
+                if self.cancel_events[job_id].is_set():
+                    return
+                self.jobs[job_id].update(status="completed", answer=old_answer +
+                    "\n\n修改已按人工批准写回；后续模型核对未完成，请查看上方 diff、沙箱测试和备份。")
+                self._trace(job_id, {"stage": "完成", "event": "verification_incomplete",
+                                     "summary": "写回已完成，但后续模型核对未完成", "details": {}})
 
     def _run(self, job_id, project, question, history, allow_sandbox=False, mode="review", test_path="tests"):
-        self._update(job_id, status="running")
-        self._trace(job_id, {"stage": "任务", "event": "started", "summary": "后台任务开始执行", "details": {}})
         try:
-            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage))
+            self._update(job_id, status="running")
+            self._worker_trace(job_id, {"stage": "任务", "event": "started", "summary": "后台任务开始执行", "details": {}})
+            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage),
+                                   self.cancel_events[job_id])
             with self.lock:
                 turns = self.jobs[job_id].pop("context_turns", [])
             if len(turns) > self.context_memory.recent_turns:
                 self._event(job_id, {"message": "正在压缩较早的对话，保留近期问答和关键约定", "kind": "stage"})
             history, memory, context = self.context_memory.prepare(turns, client)
             self._update(job_id, history=history, memory=memory, context=context)
-            self._trace(job_id, {"stage": "记忆", "event": "context_prepared", "summary": "已准备本轮会话上下文",
+            self._worker_trace(job_id, {"stage": "记忆", "event": "context_prepared", "summary": "已准备本轮会话上下文",
                                  "details": {k: v for k, v in context.items() if k != "summary"}})
             history_search = lambda text: self.context_memory.search(turns, text)
             if mode == "auto":
                 self._event(job_id, {"message": "正在理解任务并选择审查或修复流程", "kind": "stage"})
                 mode, reason, source = self._choose_mode(client, question, history)
                 self._update(job_id, mode=mode)
-                self._trace(job_id, {"stage": "规划", "event": "mode_selected", "summary": "选择" + ("修复" if mode == "repair" else "审查") + "流程",
+                self._worker_trace(job_id, {"stage": "规划", "event": "mode_selected", "summary": "选择" + ("修复" if mode == "repair" else "审查") + "流程",
                                      "details": {"selected_mode": mode, "reason": reason, "source": source}})
                 allow_sandbox = True
             if mode == "repair":
                 self._event(job_id, {"message": "执行修改：需要实际补丁，写回前请你审核", "kind": "stage"})
                 result, proposal = RepairWorkflow(project, client, lambda e: self._event(job_id, e),
-                                                  on_trace=lambda e: self._trace(job_id, e),
-                                                  history_search=history_search).run(question, history, test_path)
+                                                  on_trace=lambda e: self._worker_trace(job_id, e),
+                                                  history_search=history_search,
+                                                  cancel_event=self.cancel_events[job_id]).run(question, history, test_path)
                 with self.lock:
+                    self._check_cancelled(job_id)
                     if proposal:
                         self.proposals[job_id] = proposal
                     self.jobs[job_id].update(status="awaiting_review" if proposal else
@@ -546,27 +617,29 @@ class ReviewJobs:
                     self._persist(job_id)
                 if not proposal:
                     needs_input = result.get("outcome") == "needs_input"
-                    self._trace(job_id, {"stage": "等待" if needs_input else "停止", "event": "needs_input" if needs_input else "blocked",
+                    self._worker_trace(job_id, {"stage": "等待" if needs_input else "停止", "event": "needs_input" if needs_input else "blocked",
                                          "summary": "等待用户回答业务规则后继续修改" if needs_input else "修改未完成，等待补充需求或调整范围", "details": {}})
                 return
             self._event(job_id, {"message": "只读分析：提供证据与建议，不生成修改补丁", "kind": "stage"})
             result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e),
-                                     allow_sandbox=allow_sandbox, on_trace=lambda e: self._trace(job_id, e),
-                                     history_search=history_search).run(question, history)
+                                     allow_sandbox=allow_sandbox, on_trace=lambda e: self._worker_trace(job_id, e),
+                                     history_search=history_search,
+                                     cancel_event=self.cancel_events[job_id]).run(question, history)
             blocked = result.get("outcome") == "blocked"
             self._update(job_id, status="blocked" if blocked else "completed", answer=result["answer"], steps=result["steps"])
-            self._trace(job_id, {"stage": "停止" if blocked else "完成", "event": "blocked" if blocked else "completed",
+            self._worker_trace(job_id, {"stage": "停止" if blocked else "完成", "event": "blocked" if blocked else "completed",
                                  "summary": "审查已安全停止，保留已有证据" if blocked else "审查任务完成",
                                  "details": {"tool_calls": len(result["steps"])}})
+        except TaskCancelled:
+            return
         except ModelConfigurationError:
-            self._update(job_id, status="failed", message="请在 Hermes 的 .env 中填写有效的 HERMES_BASE_URL、HERMES_API_KEY 和 HERMES_MODEL，然后重启服务。")
-            self._trace(job_id, {"stage": "失败", "event": "configuration_error", "summary": "模型配置无效，任务停止", "details": {}})
+            self._fail_job(job_id, "请在 Hermes 的 .env 中填写有效的 HERMES_BASE_URL、HERMES_API_KEY 和 HERMES_MODEL，然后重启服务。",
+                           "configuration_error", "模型配置无效，任务停止")
         except ModelRequestError as exc:
-            self._update(job_id, status="failed", message=str(exc))
-            self._trace(job_id, {"stage": "失败", "event": "model_error", "summary": "模型请求或响应失败，任务停止", "details": {}})
+            self._fail_job(job_id, str(exc), "model_error", "模型请求或响应失败，任务停止")
         except Exception:
-            self._update(job_id, status="failed", message="审查过程中发生错误，请检查项目是否可读后重试。")
-            self._trace(job_id, {"stage": "失败", "event": "internal_error", "summary": "执行异常，任务停止", "details": {}})
+            self._fail_job(job_id, "审查过程中发生错误，请检查项目是否可读后重试。",
+                           "internal_error", "执行异常，任务停止")
 
 
 class HermesRequestHandler(BaseHTTPRequestHandler):
@@ -635,6 +708,10 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(202, self.jobs.create(payload["project_id"], payload.get("question"),
                                                     payload.get("parent_id"), payload.get("allow_sandbox", False),
                                                     payload.get("mode", "auto"), payload.get("test_path", "tests")))
+            elif self.path.startswith("/api/reviews/") and self.path.endswith("/cancel"):
+                if not isinstance(payload.get("project_id"), str):
+                    raise ValueError("项目标识格式错误。")
+                self._send_json(200, self.jobs.cancel(payload["project_id"], self.path.split("/")[-2]))
             elif self.path.startswith("/api/reviews/") and self.path.endswith("/decision"):
                 job_id = self.path.split("/")[-2]
                 self._send_json(200, self.jobs.decide(job_id, payload.get("proposal_id"), payload.get("decision")))

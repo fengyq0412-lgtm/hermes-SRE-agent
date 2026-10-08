@@ -96,6 +96,16 @@ def editable_path(path):
     return relative
 
 
+def validate_python_source(path, content):
+    """在候选补丁进入审核前检查完整 Python 文件，不执行其中的代码。"""
+    try:
+        ast.parse(content.decode("utf-8-sig"), filename=path)
+    except (SyntaxError, UnicodeError) as exc:
+        line = getattr(exc, "lineno", None)
+        location = f"第 {line} 行" if line else "文件内容"
+        raise ValueError(f"Python 语法无效（{path}，{location}）；请检查缩进并重新提交补丁。") from exc
+
+
 class ChangeSet:
     def __init__(self, workspace):
         self.workspace = Path(workspace)
@@ -104,6 +114,7 @@ class ChangeSet:
         self.test_only = False
         self.allowed_write_paths = None
         self.test_scaffolds = {}
+        self._editing_batch = False
 
     def _check_path(self, path):
         relative = editable_path(path)
@@ -119,6 +130,8 @@ class ChangeSet:
             raise ValueError("新文件需包含非空源码，最多 32 KB。")
         if len(self.originals) >= 5 and path not in self.originals:
             raise ValueError("一次最多修改或创建 5 个文件。")
+        if not self._editing_batch:
+            validate_python_source(path, content.encode())
         created_dirs = []
         try:
             fd, name = open_parent(self.workspace, path, created_dirs)
@@ -156,6 +169,8 @@ class ChangeSet:
             raise ValueError("不允许通过清空文件变相删除源码。")
         if len(updated) > 256_000:
             raise ValueError("修改后的文件超过 256 KB。")
+        if not self._editing_batch:
+            validate_python_source(path, updated)
         self.originals.setdefault(path, before)
         target.write_bytes(updated)
         return {"path": path, "message": "修改已写入临时副本，尚未应用到原项目。"}
@@ -189,6 +204,8 @@ class ChangeSet:
             raise ValueError("不允许通过清空文件变相删除源码。")
         if len(updated) > 256_000:
             raise ValueError("修改后的文件超过 256 KB。")
+        if not self._editing_batch:
+            validate_python_source(path, updated)
         self.originals.setdefault(path, before)
         target.write_bytes(updated)
         return {"path": path, "message": "行号补丁已写入临时副本，尚未应用到原项目。"}
@@ -258,8 +275,12 @@ class ChangeSet:
                 target = SourceTools(self.workspace).resolve(edit["path"])
                 snapshots.setdefault(target, target.read_bytes())
         try:
+            self._editing_batch = True
             results = [self.create_file(**edit) if "content" in edit else
                        self.edit_lines(**edit) if "start_line" in edit else self.edit_file(**edit) for edit in edits]
+            for target in snapshots:
+                name = target.resolve().relative_to(self.workspace.resolve()).as_posix()
+                validate_python_source(name, target.read_bytes())
             for path, (prefix, module) in self.test_scaffolds.items():
                 content = (self.workspace / path).read_text(encoding="utf-8")
                 if not content.startswith(prefix):
@@ -283,6 +304,8 @@ class ChangeSet:
                     target.write_bytes(content)
             self.originals = originals
             raise
+        finally:
+            self._editing_batch = False
 
 
 class PatchProposal:
@@ -291,6 +314,7 @@ class PatchProposal:
             editable_path(name)
             if before is not None and not isinstance(before, bytes) or not isinstance(after, bytes) or not after.strip():
                 raise ValueError("方案只能包含创建或修改，不能删除或清空文件。")
+            validate_python_source(name, after)
         self.id = uuid4().hex
         self.changes = changes
         self.validation = validation
@@ -412,10 +436,11 @@ class PatchProposal:
 
 
 class RepairWorkflow:
-    def __init__(self, root, client, on_event, on_trace=None, history_search=None):
+    def __init__(self, root, client, on_event, on_trace=None, history_search=None, cancel_event=None):
         self.root, self.client, self.on_event = root, client, on_event
         self.on_trace = on_trace or (lambda entry: None)
         self.history_search = history_search
+        self.cancel_event = cancel_event
 
     def _prepare_tests(self, workspace, changes, result, question, feedback=None, writable=None):
         """测试生成与纠错均限制在测试文件，失败反馈不得改变业务补丁。"""
@@ -468,7 +493,7 @@ class RepairWorkflow:
         changes.test_only, changes.allowed_write_paths = True, writable
         try:
             test_agent = CodeReviewAgent(workspace, self.client, self.on_event, editor=changes,
-                                         on_trace=self.on_trace, max_tool_calls=6)
+                                         on_trace=self.on_trace, max_tool_calls=6, cancel_event=self.cancel_event)
             action = ("根据失败输出修正本次生成的测试，保留真实业务预期；测试及实现已预读，优先提交补丁。"
                       if feedback is not None else "为本轮修改创建针对性的 pytest 回归测试，使用 tests/test_*.py；源码已预读，优先提交补丁。")
             task = (action + TEST_RULES +
@@ -514,7 +539,7 @@ class RepairWorkflow:
                            "details": {"file_count": len(baseline)}})
             changes = ChangeSet(workspace)
             agent = CodeReviewAgent(workspace, self.client, self.on_event, editor=changes, on_trace=self.on_trace,
-                                    history_search=self.history_search)
+                                    history_search=self.history_search, cancel_event=self.cancel_event)
             result = agent.run(question, history)
             patch = changes.changes()
             if not patch:
@@ -547,7 +572,7 @@ class RepairWorkflow:
                         validation = {"status": "not_run", "exit_code": None,
                                       "output": "本阶段尚未实际生成可收集的回归测试，未启动 Docker 容器；原项目未修改。"}
                     else:
-                        validation = dict(DockerSandbox(workspace).run_tests(paths))
+                        validation = dict(DockerSandbox(workspace, cancel_event=self.cancel_event).run_tests(paths))
                 except (ValueError, OSError) as exc:
                     validation = {"status": "unavailable", "exit_code": None, "output": str(exc)}
                 validation.update(test_paths=list(paths), attempt=attempt + 1, **validation_details(validation))

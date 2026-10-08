@@ -16,16 +16,21 @@ IMAGE = "hermes-sandbox:local"
 OUTPUT_LIMIT = 32_000
 
 
+class SandboxCancelled(Exception):
+    """用户中止了正在运行的临时测试容器。"""
+
+
 class DockerSandbox:
-    def __init__(self, root, timeout=60):
+    def __init__(self, root, timeout=60, cancel_event=None):
         self.root = Path(root).resolve()
         self.timeout = timeout
+        self.cancel_event = cancel_event
         self.image = os.environ.get("HERMES_SANDBOX_IMAGE", IMAGE)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@-]{0,240}", self.image):
             raise ValueError("HERMES_SANDBOX_IMAGE 必须是有效的本机镜像名。")
 
     def runtime_description(self):
-        packages = ("Python 3.11、pytest、pytest-asyncio、FastAPI、Pydantic 和 HTTPX" if self.image == IMAGE else
+        packages = ("Python 3.11、pytest、pytest-asyncio、FastAPI、Pydantic、HTTPX 和 python-pptx" if self.image == IMAGE else
                     "依赖由此自定义镜像提供，不能假定包含未确认的软件包")
         return f"本机镜像 {self.image}；{packages}；无网络；不在测试期间安装依赖。"
 
@@ -85,6 +90,8 @@ class DockerSandbox:
         return len(catalog["files"])
 
     def run_tests(self, path="tests"):
+        if self.cancel_event and self.cancel_event.is_set():
+            raise SandboxCancelled
         paths = path if isinstance(path, list) else [path]
         if not 1 <= len(paths) <= 50 or any(not isinstance(p, str) or not p or p.startswith("-")
                 or Path(p).is_absolute() or ".." in Path(p).parts for p in paths):
@@ -110,6 +117,8 @@ class DockerSandbox:
                 if created.returncode:
                     raise ValueError(f"无法创建沙箱：请启动 Docker Desktop，并确认本机已构建 {self.image} 镜像。")
                 created_ok = True
+                if self.cancel_event and self.cancel_event.is_set():
+                    raise SandboxCancelled
                 result = self._execute(name, count)
                 result["image"] = self.image
                 return result
@@ -134,6 +143,8 @@ class DockerSandbox:
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)
                 while True:
+                    if self.cancel_event and self.cancel_event.is_set():
+                        raise SandboxCancelled
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         status = "timeout"

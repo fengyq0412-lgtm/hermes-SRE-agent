@@ -215,6 +215,28 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(changes.changes()["main.py"][0], b"x = 1\n")
         self.assertEqual(len(result["steps"]), 2)
 
+    def test_invalid_indentation_is_retried_before_approval(self):
+        source = ("def result(items):\n    for item in items:\n        if item == 'bad':\n"
+                  "            return {'success': False}\n    return {'success': True}\n")
+        (self.root / "main.py").write_text(source, encoding="utf-8")
+        old = "            return {'success': False}\n    return {'success': True}\n"
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "patch", "changes": [{"path": "main.py", "old_text": old,
+                                             "new_text": "    return {'success': False}\nreturn {'success': True}\n"}]},
+            {"type": "patch", "changes": [{"path": "main.py", "old_text": old,
+                                             "new_text": "            return {'success': False, 'error': 'bad'}\n"
+                                                         "    return {'success': True, 'error': None}\n"}]},
+        ])
+        trace = []
+        changes = ChangeSet(self.root)
+        result = CodeReviewAgent(self.root, client, max_tool_calls=1, editor=changes,
+                                 on_trace=trace.append).run("修正返回格式")
+        self.assertIn("候选补丁", result["answer"])
+        self.assertIn("'error': 'bad'", (self.root / "main.py").read_text(encoding="utf-8"))
+        self.assertEqual([entry["details"]["error_code"] for entry in trace if entry["event"] == "patch_retry"],
+                         ["invalid_python_syntax"])
+
     def test_patch_phase_can_report_no_evidenced_fix_without_fabricating_changes(self):
         client = ScriptedClient([
             {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
