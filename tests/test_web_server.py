@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from hermes_sre_agent.web_server import (HermesRequestHandler, ProjectRegistry, ReviewJobs,
                                          SERVER_LOGGER, bind_web_server, browse_directories,
                                          configure_server_logging, main, restartable_listener)
+from hermes_sre_agent.repair import PatchProposal
 
 
 class WebConsoleTests(unittest.TestCase):
@@ -178,6 +179,101 @@ class WebConsoleTests(unittest.TestCase):
             added = registry.add(directory)
             reloaded = ProjectRegistry(storage=storage)
             self.assertEqual(reloaded.resolve(added["id"]), Path(directory).resolve())
+
+    def test_removed_project_stays_off_list_after_restart_and_can_be_added_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "source"
+            project.mkdir()
+            source = project / "main.py"
+            source.write_text("print('kept')\n", encoding="utf-8")
+            storage = root / "settings" / "projects.json"
+            registry = ProjectRegistry(storage=storage)
+            added = registry.add(str(project))
+            self.assertEqual(registry.remove(added["id"]), {"id": added["id"], "removed": True})
+            self.assertEqual(ProjectRegistry(storage=storage).list_public(), [])
+            self.assertEqual(source.read_text(encoding="utf-8"), "print('kept')\n")
+            self.assertEqual(registry.add(str(project))["id"], added["id"])
+            with self.assertRaises(KeyError):
+                registry.remove("unknown")
+
+    def test_project_removal_preserves_history_and_rejects_active_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProjectRegistry(storage=root / "projects.json")
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, conversation_path=root / "conversations.sqlite3")
+            job = {"id": "e" * 32, "project_id": project_id, "conversation_id": "f" * 32,
+                   "created_at": time.time(), "question": "检查代码", "status": "awaiting_review",
+                   "answer": "待审核", "events": [], "trace": [], "steps": [], "usage": {},
+                   "mode": "repair", "proposal": None}
+            try:
+                jobs.jobs[job["id"]] = job
+                jobs.store.save(job)
+                with self.assertRaisesRegex(ValueError, "待审批"):
+                    jobs.remove_project(project_id)
+                self.assertEqual(len(registry.list_public()), 1)
+                job["status"] = "interrupted"
+                jobs.futures[job["id"]] = SimpleNamespace(done=lambda: False)
+                with self.assertRaisesRegex(ValueError, "后台任务退出"):
+                    jobs.remove_project(project_id)
+                jobs.futures.pop(job["id"])
+                job["status"] = "completed"
+                jobs.store.save(job)
+                jobs.remove_project(project_id)
+                self.assertEqual(registry.list_public(), [])
+                with self.assertRaises(KeyError):
+                    jobs.list_conversations(project_id)
+                registry.add(directory)
+                self.assertEqual(jobs.get_conversation(project_id, job["conversation_id"])["turns"][0]["answer"],
+                                 "待审核")
+            finally:
+                jobs.executor.shutdown(wait=True)
+
+    def test_remove_project_route(self):
+        handler = object.__new__(HermesRequestHandler)
+        handler.server = SimpleNamespace(server_port=8765)
+        handler.path = "/api/projects/project-1"
+        handler.headers = {"Host": "127.0.0.1:8765", "X-Hermes-Token": handler.session_token}
+        handler.jobs = SimpleNamespace(remove_project=lambda project_id: {"id": project_id, "removed": True})
+        responses = []
+        handler._send_json = lambda status, body: responses.append((status, body))
+        handler.do_DELETE()
+        self.assertEqual(responses, [(200, {"id": "project-1", "removed": True})])
+
+    def test_undo_works_after_restart_and_persists_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "main.py").write_text("x = 1\n")
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            proposal = PatchProposal({"main.py": (b"x = 1\n", b"x = 2\n")},
+                                     {"status": "finished", "exit_code": 0})
+            backup = proposal.apply(root, root / ".hermes" / "backups")
+            job = {"id": "d" * 32, "project_id": project_id, "conversation_id": "e" * 32,
+                   "created_at": time.time(), "question": "修改数值", "status": "completed",
+                   "answer": "已写回", "events": [], "trace": [], "steps": [], "usage": {},
+                   "mode": "repair", "proposal": proposal.public(), "backup_path": backup}
+            store_path = root / ".hermes" / "conversations.sqlite3"
+            jobs = ReviewJobs(registry, conversation_path=store_path)
+            try:
+                jobs.jobs[job["id"]] = job
+                jobs.store.save(job)
+            finally:
+                jobs.executor.shutdown(wait=True)
+            restarted = ReviewJobs(registry, conversation_path=store_path)
+            try:
+                with patch("hermes_sre_agent.web_server.Path.cwd", return_value=root):
+                    result = restarted.undo(project_id, job["id"])
+                self.assertEqual(result["status"], "undone")
+                self.assertEqual(result["proposal"]["state"], "undone")
+                self.assertEqual((root / "main.py").read_text(), "x = 1\n")
+                self.assertEqual(restarted.store.load()[0]["status"], "undone")
+                with patch("hermes_sre_agent.web_server.Path.cwd", return_value=root):
+                    with self.assertRaises(ValueError):
+                        restarted.undo(project_id, job["id"])
+            finally:
+                restarted.executor.shutdown(wait=True)
 
     def test_browser_only_lists_visible_directories(self):
         with tempfile.TemporaryDirectory() as directory:

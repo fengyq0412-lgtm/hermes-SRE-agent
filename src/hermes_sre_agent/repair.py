@@ -435,6 +435,113 @@ class PatchProposal:
                 os.close(fd)
 
 
+def undo_applied_patch(root, backup_root, proposal_id, expected_files):
+    """依据审批备份恢复原文件；发现写回后变动时拒绝覆盖。"""
+    if (not isinstance(proposal_id, str) or len(proposal_id) != 32
+            or any(char not in "0123456789abcdef" for char in proposal_id)):
+        raise ValueError("备份编号无效。")
+    root = Path(root).resolve()
+    backup = Path(backup_root) / proposal_id
+    backup_fd = os.open(backup, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        manifest = json.loads(read_at(backup_fd, "manifest.json")[0])
+    finally:
+        os.close(backup_fd)
+    names = [file["path"] for file in expected_files]
+    saved_project = manifest.get("project")
+    if (manifest.get("proposal_id") != proposal_id or not isinstance(saved_project, str)
+            or Path(saved_project).resolve() != root
+            or manifest.get("state") != "applied" or manifest.get("files") != names
+            or len(names) != len(set(names)) or not names):
+        raise ValueError("备份与当前写回记录不匹配，不能自动撤销。")
+    operations, digests = manifest.get("operations"), manifest.get("sha256")
+    if not isinstance(operations, dict) or not isinstance(digests, dict):
+        raise ValueError("备份记录不完整，不能自动撤销。")
+
+    handles, current, originals, changed = {}, {}, {}, []
+    try:
+        # 整批预检，确认源文件及备份未被替换后才开始恢复。
+        for file in expected_files:
+            name = editable_path(file["path"]).as_posix()
+            operation = file["operation"]
+            hashes = digests.get(name)
+            if (operation not in {"create", "modify"} or operations.get(name) != operation
+                    or not isinstance(hashes, dict) or not isinstance(hashes.get("after"), str)):
+                raise ValueError("备份记录不完整，不能自动撤销。")
+            fd, basename = open_parent(root, name)
+            handles[name] = (fd, basename)
+            data, mode = read_at(fd, basename)
+            if hashlib.sha256(data).hexdigest() != hashes["after"]:
+                raise ValueError(f"{name} 在写回后已有变化，不能覆盖；请根据备份手动处理。")
+            current[name] = (data, mode)
+            if operation == "modify":
+                backup_fd, backup_name = open_parent(backup, name)
+                try:
+                    before = read_at(backup_fd, backup_name)[0]
+                finally:
+                    os.close(backup_fd)
+                if hashlib.sha256(before).hexdigest() != hashes.get("before"):
+                    raise ValueError(f"{name} 的原文件备份已变化，不能自动撤销。")
+                originals[name] = before
+            elif hashes.get("before") is not None:
+                raise ValueError("新建文件的备份记录无效，不能自动撤销。")
+
+        def save_manifest(state):
+            manifest["state"] = state
+            fd = os.open(backup, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                replace_at(fd, "manifest.json", json.dumps(manifest, ensure_ascii=False).encode(), 0o600)
+            finally:
+                os.close(fd)
+
+        save_manifest("undoing")
+        try:
+            for name in reversed(names):
+                fd, basename = handles[name]
+                after, mode = current[name]
+                if read_at(fd, basename)[0] != after:
+                    raise ValueError(f"{name} 在撤销前发生变化，不能覆盖。")
+                changed.append(name)
+                if operations[name] == "create":
+                    os.unlink(basename, dir_fd=fd)
+                else:
+                    replace_at(fd, basename, originals[name], mode)
+            save_manifest("undone")
+        except Exception as exc:
+            unresolved = []
+            for name in reversed(changed):
+                fd, basename = handles[name]
+                after, mode = current[name]
+                try:
+                    if operations[name] == "create":
+                        try:
+                            present = read_at(fd, basename)[0]
+                        except FileNotFoundError:
+                            create_at(fd, basename, after, mode)
+                        else:
+                            if present != after:
+                                unresolved.append(name)
+                    else:
+                        present = read_at(fd, basename)[0]
+                        if present == originals[name]:
+                            replace_at(fd, basename, after, mode)
+                        elif present != after:
+                            unresolved.append(name)
+                except (OSError, ValueError):
+                    unresolved.append(name)
+            try:
+                save_manifest("manual_recovery_required" if unresolved else "applied")
+            except OSError:
+                unresolved.append("manifest.json")
+            if unresolved:
+                raise ValueError(f"撤销未完成，请根据备份手动恢复 {unresolved}；备份：{backup}") from exc
+            raise
+        return {"backup_path": str(backup), "restored_files": len(names)}
+    finally:
+        for fd, _ in handles.values():
+            os.close(fd)
+
+
 class RepairWorkflow:
     def __init__(self, root, client, on_event, on_trace=None, history_search=None, cancel_event=None):
         self.root, self.client, self.on_event = root, client, on_event

@@ -26,7 +26,7 @@ from .code_review import CodeReviewAgent
 from .conversation import ContextMemory, ConversationStore, evidence_for
 from .env_loader import load_dotenv
 from .model_client import ModelConfig, ModelConfigurationError, ModelRequestError, OpenAICompatibleClient, parse_json_reply
-from .repair import RepairWorkflow
+from .repair import RepairWorkflow, undo_applied_patch
 
 
 MAX_REQUEST_BYTES = 16_384
@@ -207,6 +207,20 @@ class ProjectRegistry:
             return [{"id": key, "name": path.name, "path": str(path)}
                     for key, path in sorted(self.projects.items(), key=lambda item: item[1].name.lower())]
 
+    def remove(self, project_id):
+        """只取消项目注册；项目文件与已保存会话留待重新添加后访问。"""
+        with self.lock:
+            if project_id not in self.projects:
+                raise KeyError("项目不存在或已移除。")
+            remaining = {key: path for key, path in self.projects.items() if key != project_id}
+            if self.storage:
+                self.storage.parent.mkdir(parents=True, exist_ok=True)
+                temporary = self.storage.with_suffix(".tmp")
+                temporary.write_text(json.dumps([str(path) for path in remaining.values()], ensure_ascii=False), encoding="utf-8")
+                temporary.replace(self.storage)
+            self.projects = remaining
+            return {"id": project_id, "removed": True}
+
     def resolve(self, project_id):
         with self.lock:
             if project_id not in self.projects:
@@ -268,10 +282,11 @@ class ReviewJobs:
             raise ValueError("请提供有效测试路径。")
         if type(allow_sandbox) is not bool:
             raise ValueError("沙箱选项必须为布尔值。")
-        project = self.registry.resolve(project_id)
         if not isinstance(question, str) or not 1 <= len(question.strip()) <= 4000:
             raise ValueError("请输入 1 到 4000 个字符的审查问题。")
         with self.lock:
+            # 与项目移除共用任务锁，避免创建任务与取消授权交错。
+            project = self.registry.resolve(project_id)
             if sum(j["status"] in {"queued", "running"} for j in self.jobs.values()) >= 2:
                 raise ValueError("已有两项审查正在运行，请等待完成。")
             history = []
@@ -279,7 +294,7 @@ class ReviewJobs:
             conversation_id = uuid4().hex
             if parent_id:
                 parent = self.jobs.get(parent_id)
-                if not parent or parent["project_id"] != project_id or parent["status"] not in {"completed", "blocked", "needs_input", "applied", "rejected", "failed", "interrupted"}:
+                if not parent or parent["project_id"] != project_id or parent["status"] not in {"completed", "blocked", "needs_input", "applied", "rejected", "failed", "interrupted", "undone"}:
                     raise ValueError("追问必须对应同一项目的已完成回答。")
                 conversation_id = parent["conversation_id"]
                 turns = sorted((j for j in self.jobs.values() if j.get("conversation_id") == conversation_id),
@@ -404,6 +419,18 @@ class ReviewJobs:
                                project_id, conversation_id, len(turns))
             return {"id": conversation_id, "deleted_turns": len(turns)}
 
+    def remove_project(self, project_id):
+        with self.lock:
+            self.registry.resolve(project_id)
+            active = [job for job in self.jobs.values() if job["project_id"] == project_id
+                      and (job["status"] in {"queued", "running", "awaiting_review"}
+                           or (self.futures.get(job["id"]) and not self.futures[job["id"]].done()))]
+            if active:
+                raise ValueError("项目仍有正在执行或待审批的任务，请先完成或中止；后台任务退出后再移除。")
+            result = self.registry.remove(project_id)
+            SERVER_LOGGER.info("event=project_removed project_id=%s", project_id)
+            return result
+
     def _persist(self, job_id):
         try:
             self.jobs[job_id].pop("persistence_error", None)
@@ -500,6 +527,35 @@ class ReviewJobs:
         else:
             self._trace(job_id, {"stage": "审批", "event": "rejected", "summary": "人工拒绝，原项目未修改", "details": {}})
         return self.get(job_id)
+
+    def undo(self, project_id, job_id):
+        """从本轮审批备份恢复写回内容，拒绝覆盖后续人工修改。"""
+        with self.lock:
+            project = self.registry.resolve(project_id)
+            job = self.jobs.get(job_id)
+            if not job or job["project_id"] != project_id:
+                raise KeyError("任务不存在或不属于当前项目。")
+            proposal = job.get("proposal") or {}
+            proposal_id = proposal.get("id")
+            backup_root = Path.cwd() / ".hermes" / "backups"
+            if (proposal.get("state") != "applied" or job["status"] not in {"completed", "interrupted"}
+                    or job.get("backup_path") != str(backup_root / str(proposal_id))):
+                raise ValueError("本轮没有可撤销的已写回修改。")
+            if any(other["project_id"] == project_id and
+                   (other["status"] in {"queued", "running", "awaiting_review"}
+                    or (self.futures.get(other["id"]) and not self.futures[other["id"]].done()))
+                   for other in self.jobs.values()):
+                raise ValueError("项目仍有正在执行或待审批的任务，请结束后再撤销。")
+            result = undo_applied_patch(project, backup_root, proposal_id, proposal["files"])
+            proposal.update(state="undone", can_apply=False)
+            if job_id in self.proposals:
+                self.proposals[job_id].state = "undone"
+            job.update(status="undone", answer=(job.get("answer", "") +
+                       "\n\n已撤销本轮写回：原有文件已恢复，本轮新建文件已移除。上文的写回结果描述的是撤销前状态。").strip())
+            job["events"].append({"message": "你已撤销本轮写回", "kind": "approval"})
+            self._trace(job_id, {"stage": "撤销", "event": "undone", "summary": "已从审批备份恢复本轮修改",
+                                 "details": {"file_count": result["restored_files"]}})
+            return self.get(job_id)
 
     @staticmethod
     def _choose_mode(client, question, history):
@@ -712,6 +768,10 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                 if not isinstance(payload.get("project_id"), str):
                     raise ValueError("项目标识格式错误。")
                 self._send_json(200, self.jobs.cancel(payload["project_id"], self.path.split("/")[-2]))
+            elif self.path.startswith("/api/reviews/") and self.path.endswith("/undo"):
+                if not isinstance(payload.get("project_id"), str):
+                    raise ValueError("项目标识格式错误。")
+                self._send_json(200, self.jobs.undo(payload["project_id"], self.path.split("/")[-2]))
             elif self.path.startswith("/api/reviews/") and self.path.endswith("/decision"):
                 job_id = self.path.split("/")[-2]
                 self._send_json(200, self.jobs.decide(job_id, payload.get("proposal_id"), payload.get("decision")))
@@ -728,6 +788,9 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             segments = parsed.path.split("/")
+            if len(segments) == 4 and segments[:3] == ["", "api", "projects"] and segments[3]:
+                self._send_json(200, self.jobs.remove_project(segments[3]))
+                return
             if len(segments) != 4 or segments[:3] != ["", "api", "conversations"] or not segments[3]:
                 self._send_json(404, {"error": "接口不存在。"})
                 return

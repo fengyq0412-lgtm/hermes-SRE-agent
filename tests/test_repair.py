@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hermes_sre_agent.repair import ChangeSet, PatchProposal, RepairWorkflow
+from hermes_sre_agent.repair import ChangeSet, PatchProposal, RepairWorkflow, replace_at, undo_applied_patch
 from hermes_sre_agent.code_review import CodeReviewAgent
 from hermes_sre_agent.web_server import ProjectRegistry, ReviewJobs
 
@@ -58,6 +58,46 @@ class RepairTests(unittest.TestCase):
         self.assertEqual((Path(backup) / "main.py").read_text(), "x = 1\n")
         with self.assertRaises(ValueError):
             proposal.apply(self.root, self.backups)
+
+    def test_undo_restores_modified_file_and_removes_created_file(self):
+        proposal = PatchProposal({"main.py": (b"x = 1\n", b"x = 2\n"),
+                                  "tests/test_new.py": (None, b"def test_new():\n    assert True\n")}, PASS)
+        backup = proposal.apply(self.root, self.backups)
+        result = undo_applied_patch(self.root, self.backups, proposal.id, proposal.public()["files"])
+        self.assertEqual(result["restored_files"], 2)
+        self.assertEqual((self.root / "main.py").read_bytes(), b"x = 1\n")
+        self.assertFalse((self.root / "tests/test_new.py").exists())
+        self.assertEqual(json.loads((Path(backup) / "manifest.json").read_text())["state"], "undone")
+        with self.assertRaisesRegex(ValueError, "不匹配"):
+            undo_applied_patch(self.root, self.backups, proposal.id, proposal.public()["files"])
+
+    def test_undo_refuses_changed_file_before_restoring_any_file(self):
+        proposal = PatchProposal({"main.py": (b"x = 1\n", b"x = 2\n"),
+                                  "tests/test_new.py": (None, b"def test_new():\n    assert True\n")}, PASS)
+        backup = proposal.apply(self.root, self.backups)
+        (self.root / "main.py").write_text("user_change = True\n")
+        with self.assertRaisesRegex(ValueError, "已有变化"):
+            undo_applied_patch(self.root, self.backups, proposal.id, proposal.public()["files"])
+        self.assertEqual((self.root / "main.py").read_text(), "user_change = True\n")
+        self.assertTrue((self.root / "tests/test_new.py").exists())
+        self.assertEqual(json.loads((Path(backup) / "manifest.json").read_text())["state"], "applied")
+
+    def test_undo_failure_reinstates_files_already_removed(self):
+        proposal = PatchProposal({"main.py": (b"x = 1\n", b"x = 2\n"),
+                                  "tests/test_new.py": (None, b"def test_new():\n    assert True\n")}, PASS)
+        backup = proposal.apply(self.root, self.backups)
+
+        def fail_main_restore(fd, name, content, mode):
+            if name == "main.py" and content == b"x = 1\n":
+                raise OSError("模拟恢复失败")
+            return replace_at(fd, name, content, mode)
+
+        with patch("hermes_sre_agent.repair.replace_at", side_effect=fail_main_restore):
+            with self.assertRaisesRegex(OSError, "模拟恢复失败"):
+                undo_applied_patch(self.root, self.backups, proposal.id, proposal.public()["files"])
+        self.assertEqual((self.root / "main.py").read_bytes(), b"x = 2\n")
+        self.assertTrue((self.root / "tests/test_new.py").exists())
+        self.assertEqual(json.loads((Path(backup) / "manifest.json").read_text())["state"], "applied")
 
     def test_conflict_or_failed_tests_prevent_writeback(self):
         (self.root / "main.py").write_text("user_edit = True\n")

@@ -47,6 +47,14 @@ test('历史会话使用可删除的列表，输入操作区保持稳定对齐',
   assert.ok(script.includes('window.confirm'));
 });
 
+test('项目列表可移除，明确保留源码与历史', () => {
+  assert.ok(html.includes('project-row'));
+  assert.ok(script.includes("'/api/projects/'+encodeURIComponent(project.id)"));
+  assert.ok(script.includes("'DELETE'"));
+  assert.ok(script.includes('项目文件和历史会话不会删除'));
+  assert.ok(script.includes('state.chats.delete(project.id)'));
+});
+
 test('旧服务返回 HTML 时会提示重启，而不是暴露 JSON 解析错误', () => {
   assert.ok(script.includes("method==='DELETE'&&r.status===501"));
   assert.ok(script.includes('当前 hermes-web 尚未重启'));

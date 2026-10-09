@@ -30,7 +30,7 @@ class DockerSandbox:
             raise ValueError("HERMES_SANDBOX_IMAGE 必须是有效的本机镜像名。")
 
     def runtime_description(self):
-        packages = ("Python 3.11、pytest、pytest-asyncio、FastAPI、Pydantic、HTTPX 和 python-pptx" if self.image == IMAGE else
+        packages = ("Python 3.11、pytest、pytest-asyncio、FastAPI、Pydantic、HTTPX，以及文档、搜索和 agent-demo 业务依赖（见 sandbox/requirements.txt）" if self.image == IMAGE else
                     "依赖由此自定义镜像提供，不能假定包含未确认的软件包")
         return f"本机镜像 {self.image}；{packages}；无网络；不在测试期间安装依赖。"
 
