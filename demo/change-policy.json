@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "services": {
+    "legal-agent": {
+      "config_file": "runtime/state.json",
+      "container": "legal-agent",
+      "health_url": "http://127.0.0.1:8000/health",
+      "expected_status": 200,
+      "max_latency_ms": 1500,
+      "verify_fields": {
+        "scenario": "scenario",
+        "batch_size": "batch_size"
+      },
+      "allowed_keys": {
+        "scenario": {"type": "string", "choices": ["normal", "api_slow", "api_500"]},
+        "status_code": {"type": "integer", "min": 200, "max": 599},
+        "delay_seconds": {"type": "number", "min": 0, "max": 5},
+        "batch_size": {"type": "integer", "min": 1, "max": 64},
+        "log_message": {"type": "string", "choices": ["INFO request completed normally batch_size=16"]}
+      }
+    }
+  }
+}

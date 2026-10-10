@@ -6,7 +6,7 @@
 观察 → 诊断 → 制定计划 → 人工审批 → 修复 → 验证
 ```
 
-Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库目前包含一条完整、可复现的慢接口故障诊断链路，也能安全读取本机的只读状态，适合作为可演示、可审查的作品集项目。
+Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库包含可复现的故障诊断链路、本机只读采集，以及独立的 V0.2 人工运维变更命令。
 
 ## 一分钟演示
 
@@ -15,7 +15,7 @@ Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集�
 conda env create -f environment.yml
 conda activate hermes-sre-agent
 
-# requirements.txt 会以可编辑模式安装本项目，获得 hermes 命令
+# requirements.txt 会以可编辑模式安装本项目，获得 hermes 和 hermes-change 命令
 pip install -r requirements.txt
 
 # 无需模型密钥的确定性演示
@@ -217,6 +217,23 @@ python demo/inject_fault.py --scenario normal
 
 故障注入仅改写 `demo/runtime/state.json`，不会执行容器删除、重启、停止进程或任何宿主机变更命令。可用场景为 `normal`、`api_slow`、`api_500`。
 
+### V0.2：人工审批的受控运维变更
+
+`hermes` 诊断进程及模型工具仍然只能读取；需要实际恢复演示服务时，由运维人员在终端单独运行 `hermes-change`。升级后先重新执行 `pip install -r requirements.txt`，以安装新命令。以下示例假定演示容器正在运行、`demo/runtime/state.json` 已由故障注入脚本生成：
+
+```bash
+python demo/inject_fault.py --scenario api_slow
+hermes-change --policy demo/change-policy.json plan --service legal-agent \
+  --changes '{"scenario":"normal","status_code":200,"delay_seconds":0.1,"batch_size":16,"log_message":"INFO request completed normally batch_size=16"}'
+hermes-change --policy demo/change-policy.json approve PLAN_ID
+hermes-change --policy demo/change-policy.json apply PLAN_ID
+hermes-change --policy demo/change-policy.json show PLAN_ID
+```
+
+`plan` 只读取当前配置与容器身份，输出修改前后字段；`approve` 展示计划并要求手工输入服务名，随后仅显示一次有效期十分钟的令牌；`apply` 从终端安全读取令牌，原子消费后再次检查策略、配置和容器是否变化。通过检查后，命令只修改策略白名单内的 JSON 字段、重启指定 Docker 容器，并最多检查三次本机 HTTP 健康状态、延迟和已映射字段。结果可用 `show` 追溯。每一步须使用同一 `--policy` 与 `--state-dir`（默认为 `.hermes/remediation`）。令牌失效或检查冲突时需重新生成计划，不能重用原令牌。
+
+原配置备份保存在 `.hermes/remediation/backups/<计划 ID>.json`，命令返回备份路径。若重启或健康检查失败，**不会自动回滚**：先核对现场，再根据备份人工恢复或生成新的受控计划。示例策略仅允许 `legal-agent` 的五个演示字段，其中日志文案只能写为正常状态的固定值；实际服务须由运维人员另建白名单策略，且健康检查限本机 HTTP。此命令不接受模型生成的审批令牌或任意 Shell 命令，也不提供容器删除操作。服务重启可能中断请求，请在适当维护窗口执行。
+
 Docker 环境启动后，可让 Hermes 读取真实的 HTTP 与 Docker 日志（其余主机采集项若不可用，会在报告中如实说明）：
 
 ```bash
@@ -266,7 +283,7 @@ ScenarioBackend（可复现演示） / LiveReadOnlyBackend（本机只读）
     ↓
 证据轨迹 → 模型假设 → 程序验证证据引用 → 报告
     ↓
-修复计划（需要审批；当前不会执行）
+修复建议（模型不会执行；人工可另用 hermes-change 生成受控变更）
 ```
 
 工具边界就是安全边界。`system_metrics`、`gpu_metrics`、`docker_list`、`docker_logs`、`service_health`、`git_recent_changes`、`config_diff` 与 `git_code_review` 是只读工具。`restart_service`、`edit_config` 被定义为危险操作，并且在进入任何后端之前即被阻断。
@@ -277,13 +294,13 @@ ScenarioBackend（可复现演示） / LiveReadOnlyBackend（本机只读）
 - 每次只读观察及其失败都会被记录到 trajectory。
 - 只有多条独立证据互相印证，才会给出高置信度根因。
 - 缺少或冲突的证据会产生“未确定”报告，绝不编造结论。
-- 当前版本没有任何修复执行路径。
+- `hermes` 模型工具始终只读；V0.2 的写配置与重启仅存在于独立的人工 CLI，需白名单策略和一次性审批令牌。
 
 ### 代码审查是否需要沙箱？
 
 需要分层处理：**只读差异审查**不需要运行代码，但仍应在只读工作区中进行，限制读取范围、返回长度，并把 Git diff / 日志视为不可信输入，防止提示注入。Hermes 的 `git_code_review` 正是这一层：仅调用禁用外部 diff 与分页器的受限 `git diff`，最多返回 20,000 字符，绝不执行仓库内容。
 
-**运行测试、构建、复现故障或执行脚本**则必须进入独立沙箱：临时 worktree 或容器、无默认网络、无生产密钥、CPU / 内存 / 时长限制，并且需要用户明确授权。它与 SRE 修复执行器应是两个独立权限域。当前版本尚未提供这类执行沙箱，因此页面不会运行任何项目代码。
+**运行测试、构建、复现故障或执行脚本**则必须进入独立沙箱：临时 worktree 或容器、无默认网络、无生产密钥、CPU / 内存 / 时长限制。它与 SRE 运维变更是两个独立权限域。页面的项目测试已使用上文所述的一次性 Docker 沙箱；沙箱验证通过仍不能代替人工批准写回。
 
 ## 质量检查
 
@@ -299,12 +316,12 @@ PYTHONPATH=src python3 -m unittest discover -s tests -v
 node --test tests/test_diff_ui.cjs
 ```
 
-测试覆盖：端到端慢接口诊断、模型自主工具选择、伪造证据拦截、危险重启工具拦截、代码审查输入限制和证据不足时的安全停止。
+测试覆盖：端到端慢接口诊断、模型自主工具选择、伪造证据拦截、危险重启工具拦截、代码审查输入限制、证据不足时的安全停止，以及 V0.2 的令牌重放、配置冲突、白名单和健康检查失败。
 
 ## 路线图
 
-- **V0.1（当前）：** Agent 工具规划、可复现诊断、报告、轨迹与本机只读采集。
-- **V0.2：** 一次性审批令牌、白名单配置变更、服务重启与变更后验证。
+- **V0.1：** Agent 工具规划、可复现诊断、报告、轨迹与本机只读采集。
+- **V0.2（当前）：** 独立人工 CLI 的一次性审批令牌、白名单配置变更、服务重启与变更后验证。
 - **V0.3：** Docker / Linux / HTTP / Git 的更完整实时适配器与评测用例集。
 - **V0.4：** 多智能体分诊与事件记忆。
 - **V0.5：** Kubernetes、Prometheus、Grafana 集成。
