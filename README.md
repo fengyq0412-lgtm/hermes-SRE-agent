@@ -6,7 +6,7 @@
 观察 → 诊断 → 制定计划 → 人工审批 → 修复 → 验证
 ```
 
-Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库包含可复现的故障诊断链路、本机只读采集、受控运维变更命令、诊断评测，以及 V0.4 多角色分诊和事件记忆。
+Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库包含可复现的故障诊断链路、本机只读采集、受控运维变更命令、诊断评测、多角色分诊与事件记忆，以及 V0.5 平台观测接入。
 
 ## 一分钟演示
 
@@ -76,6 +76,14 @@ hermes-web
    已添加的项目可点击侧栏项目右侧的「×」移除；仅从 Hermes 列表移除，不删除源码或历史会话，重新添加相同目录即可恢复查看。项目有运行中或待审批任务时不能移除。
 3. 输入审查问题，按 Enter 发送。Agent 会选择列目录、提取 Python 结构、搜索代码、读取源码等工具，页面展示检查进度和最终模型回答。
 4. 在同一会话继续提问会带上近期问答、较早对话摘要和历史证据索引；运行中的任务可点击「中止任务」，之后点击「继续任务」会沿用原会话新开一轮。已发出的模型请求可能在返回或超时后才退出，已启动的沙箱测试会停止并清理容器。侧栏以列表展示并可切换「历史会话」。「新对话」开启独立上下文，旧对话仍保留。切换项目不会混用记忆。
+
+### 网页运行诊断（只读）
+
+在输入框上方将「任务类型」切换为「运行诊断（只读）」，明确填写实际**服务名、Docker 容器名和 HTTP 健康检查地址**，再输入故障描述。三个目标都没有 `legal-agent` 默认值；缺少或格式不合法会在后台采集前拒绝。先选择与服务对应的项目：该目录只用于 Git 变更线索，不会被运行诊断修改。请确认健康检查地址确实存在，不能把示例地址当成已部署端点。
+
+默认「规则分诊」无需模型密钥，读取本机 HTTP、Docker、系统/GPU 与所选项目的 Git 线索；也可选「模型辅助」，让模型在已启用的只读工具中选择证据，此时采集结果会发送到 `.env` 配置的模型服务。展开「可选：Kubernetes / Prometheus / Grafana」后，可按需填写 context、namespace、selector、Prometheus 根地址与 job、Grafana 根地址与令牌**环境变量名**。成组参数必须填全；Grafana 令牌值只在服务端环境变量或 `.env` 中设置，不输入网页。运行结果、目标参数与摘要会保存在本机会话；原始平台响应不单独写入会话库，但诊断报告可能包含容器日志片段，请按敏感数据管理。页面不会执行重启、配置修改或代码写回。
+
+升级已有安装后需重启 `hermes-web`，再刷新页面才能使用新接口。没有 Docker、kubectl 或平台凭据时，相应采集项会如实显示失败；这不等于已确认服务故障。
 
 项目列表保存在启动目录的 `.hermes/projects.json`，会话保存在 `.hermes/conversations.sqlite3`，均在重启后保留。刷新页面会恢复选中的项目会话和执行状态。运行日志会另外保存到本地（见下节）。网页问答不往被审查项目写报告。选择没有 Git 历史的项目也能直接审查源码。
 
@@ -194,7 +202,28 @@ hermes --history --service legal-agent --backend scenario
 hermes "只做本次诊断" --mode triage --no-memory
 ```
 
-查询实时事件时使用 `--backend live`；自定义 `--output-dir` 后，诊断与历史查询应使用同一目录。索引数据库仅当前本机用户可读写；报告和 trajectory 的敏感信息仍按原有文件管理要求处理。网页项目会话记忆与这里的 SRE 事件索引相互独立。
+查询实时事件时使用 `--backend live --service <目标服务>`；自定义 `--output-dir` 后，诊断与历史查询应使用同一目录。索引数据库仅当前本机用户可读写；报告和 trajectory 的敏感信息仍按原有文件管理要求处理。网页项目会话记忆与这里的 SRE 事件索引相互独立。
+
+### V0.5 平台观测（显式启用）
+
+`hermes` CLI 的实时诊断可额外采集 Kubernetes、Prometheus 和 Grafana。未提供参数时不会访问这些平台。参数必须指定采集目标；演示场景和 `rules` 模式不使用这些集成。`triage` 将成功读取的结果列入“平台观测”分诊，`agent` 只会看到本次已启用的工具。两者都不会依据单一抓取或规则配置自动执行修复。
+
+```bash
+# 按实际环境填写 context、namespace、selector、job 和地址；以下仅是示意
+export HERMES_GRAFANA_TOKEN='你的 Grafana 服务账号令牌'
+hermes "hermes-web 响应变慢" --backend live --mode triage \
+  --service hermes-web --container hermes-web --health-url http://127.0.0.1:8765/health \
+  --kube-context prod --kube-namespace hermes --kube-selector app=hermes-web \
+  --prometheus-url https://prometheus.example.com --prometheus-job hermes-web \
+  --grafana-url https://grafana.example.com --grafana-token-env HERMES_GRAFANA_TOKEN
+```
+
+- Kubernetes 仅执行指定 context、namespace 和 label selector 的 `kubectl get deployments,pods -o json`。运行用户需已配置 kubeconfig 并具备相应资源的读取权限；不会执行 `apply`、`delete` 或 `rollout`。
+- Prometheus 只对指定 job 查询瞬时 `up` 指标。`up=1` 仅表示抓取成功，不证明应用健康；空结果也不是健康证据。
+- Grafana 使用环境变量中的服务账号令牌读取已配置告警规则的摘要。规则列表**不是当前触发告警列表**，不会把规则查询配置或令牌写入报告。令牌需有告警规则读取权限。
+- 远程 Prometheus/Grafana 地址须用 HTTPS；只有 localhost、127.0.0.1、::1 可用 HTTP。HTTP 请求不跟随重定向，单次超时默认 5 秒，响应最多 128 KiB，输出最多 50 项。失败会作为采集错误留下记录，不会伪装成正常状态。
+
+目前没有真实集群或服务地址的端到端验证；上线前请先用只读凭据在目标环境核对 label、job、网络和 Grafana 权限。这些只读采集也可在上文所述的 `hermes-web`「运行诊断」任务中显式启用；原有代码审查与修改流程不受影响。
 
 默认演示场景稳定复现了一个可信的 AI 推理事故：
 
@@ -273,6 +302,8 @@ hermes "检查本机 legal-agent 是否正常" --mode rules --backend live \
 ```
 
 本机模式只会尝试采集系统负载、NVIDIA GPU、Docker、HTTP 健康检查和 Git 差异。Linux 主机 CPU 使用率由 `/proc/stat` 短时间采样得到；其他系统单独展示一分钟负载估算，不把它当成真实 CPU 使用率进行归因。Docker 同时列出运行中和已停止的容器，运行中容器附带 `docker stats` 的 CPU、内存数据；资源统计失败时仍保留容器状态。容器 stdout 和 stderr 日志都会进入最近日志证据。Git 返回最近五次提交，并只从最新已提交的 JSON/YAML/TOML/INI/CFG 文件差异中提取 `batch_size` 变化。环境未安装 Docker、没有 NVIDIA GPU、服务不可访问等情况会如实写入报告，且诊断会因关键证据缺失停止。
+
+实时诊断（包括 `--interactive`）必须同时显式传入 `--service`、`--container` 和 `--health-url`；缺少任一项会在采集前报错，不会沿用演示用的 `legal-agent` 或推测容器与端口。仅查询实时事件历史时只需 `--service`，不执行采集。演示场景仍默认使用 `legal-agent`。
 
 Git 提交不等同于运行中的版本。即使仓库配置变更、GPU 压力和排队日志吻合，若未核对实际部署与运行时配置，规则诊断只把它列为中等置信度的线索，不会宣布根因已确认。Agent 模式的健康检查 URL 与容器日志目标固定为本次命令指定的 `--health-url`、`--container`；需诊断其他目标时重新指定参数。
 
@@ -354,8 +385,8 @@ node --test tests/test_diff_ui.cjs
 - **V0.1：** Agent 工具规划、可复现诊断、报告、轨迹与本机只读采集。
 - **V0.2：** 独立人工 CLI 的一次性审批令牌、白名单配置变更、服务重启与变更后验证。
 - **V0.3：** Docker 容器状态与资源、Linux CPU、HTTP 探针目标约束、Git 提交与配置线索，以及可复现的诊断评测用例集。
-- **V0.4（当前）：** 三角色只读分诊、协调决策与跨事件的结构化症状索引。
-- **V0.5：** Kubernetes、Prometheus、Grafana 集成。
+- **V0.4：** 三角色只读分诊、协调决策与跨事件的结构化症状索引。
+- **V0.5（当前）：** 显式启用的 Kubernetes 工作负载、Prometheus 抓取状态、Grafana 告警规则只读集成。
 
 ## 项目结构
 

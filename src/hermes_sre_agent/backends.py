@@ -15,6 +15,10 @@ class ScenarioBackend:
         self.name = scenario
         self.data: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
 
+    @property
+    def available_tools(self):
+        return list(self.data)
+
     def read(self, tool: str, **_: Any) -> Any:
         if tool not in self.data:
             raise KeyError(f"演示场景 '{self.name}' 未提供工具 {tool} 的数据")

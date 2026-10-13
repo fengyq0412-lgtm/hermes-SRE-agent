@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from typing import Optional
 
 from .contracts import RunResult
 
 
-def render_report(run: RunResult) -> str:
+def render_report(run: RunResult, approval_message: Optional[str] = None) -> str:
     d, i = run.diagnosis, run.incident
     lines = [
         "# 事件摘要", "", f"**事件：** `{i.incident_id}`", f"**服务：** {i.service}",
@@ -20,7 +21,7 @@ def render_report(run: RunResult) -> str:
         "# 根因", "", f"{d.root_cause}", f"\n**置信度：** {d.confidence}", "",
         "# 建议修复方案", "", *[f"{idx}. {item}" for idx, item in enumerate(d.remediation, 1)], "",
         "# 风险", "", d.risk, "",
-        "# 审批", "", "等待用户明确批准；尚未执行任何会改变系统状态的命令。"
+        "# 审批", "", approval_message or "等待用户明确批准；尚未执行任何会改变系统状态的命令。"
         if d.needs_approval else "未提出操作；Hermes 已安全停止。",
     ]
     return "\n".join(lines) + "\n"

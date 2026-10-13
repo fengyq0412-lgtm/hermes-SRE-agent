@@ -12,8 +12,9 @@ from .tools import ControlledTools, ToolExecutionError
 class TriageAgent:
     """固定职责的分诊角色；历史事件不会进入诊断判断。"""
 
-    def __init__(self, backend: Any):
+    def __init__(self, backend: Any, on_observation=None):
         self.tools = ControlledTools(backend)
+        self.on_observation = on_observation
 
     def investigate(self, user_query: str, service: str = "legal-agent",
                     health_url: Optional[str] = None, container: Optional[str] = None) -> RunResult:
@@ -31,6 +32,9 @@ class TriageAgent:
             ("git_recent_changes", {}),
             ("config_diff", {}),
         ]
+        available = set(getattr(self.tools.backend, "available_tools", ()))
+        requests.extend((name, {}) for name in ("kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules")
+                        if name in available)
         calls: List[ToolCall] = []
         observed: Dict[str, Any] = {}
         for tool, arguments in requests:
@@ -41,11 +45,15 @@ class TriageAgent:
             except (ToolExecutionError, KeyError, ValueError) as exc:
                 calls.append(ToolCall(tool, arguments, None, error=str(exc)))
                 observed[tool] = None
+            if self.on_observation:
+                self.on_observation(calls[-1])
 
         availability = self._availability(observed, calls, target_container)
         performance = self._performance(observed, calls)
         changes = self._changes(observed, calls)
         assessments = [availability, performance, changes]
+        if any(name in observed for name in ("kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules")):
+            assessments.append(self._observability(observed, calls))
 
         # 变更角色没有确认到批大小线索时，协调器不把原始 Git 输出交给根因规则。
         config = observed["config_diff"] if changes["signal"] in {"batch_change", "repository_candidate"} \
@@ -133,3 +141,29 @@ class TriageAgent:
             signal, summary = "no_batch_change", "未发现可用的批大小变更证据"
         return {"role": "变更", "signal": signal, "summary": summary,
                 "evidence_tools": cls._evidence(calls, {"git_recent_changes", "config_diff"})}
+
+    @classmethod
+    def _observability(cls, observed, calls):
+        kube = observed.get("kubernetes_workloads") or {}
+        prom = observed.get("prometheus_scrape") or {}
+        grafana = observed.get("grafana_alert_rules") or {}
+        workloads = kube.get("workloads", []) if isinstance(kube, dict) else []
+        targets = prom.get("targets", []) if isinstance(prom, dict) else []
+        rules = grafana.get("rules", []) if isinstance(grafana, dict) else []
+        unready = [item for item in workloads if item.get("kind") == "Deployment"
+                   and isinstance(item.get("replicas"), int)
+                   and (item.get("ready_replicas") or 0) < item["replicas"]]
+        unhealthy_pods = [item for item in workloads if item.get("kind") == "Pod"
+                          and item.get("phase") in {"Pending", "Failed", "Unknown"}]
+        failed = [item for item in targets if item.get("up") is False]
+        if unready or unhealthy_pods or failed:
+            signal, summary = "degraded", (f"发现 {len(unready)} 个副本不足的 Deployment、"
+                                            f"{len(unhealthy_pods)} 个状态异常的 Pod、{len(failed)} 个抓取失败目标；"
+                                            "需与服务故障交叉验证")
+        elif workloads or targets or rules:
+            signal, summary = "snapshot", "已收集平台观测快照；仅凭配置规则或抓取成功不能证明服务健康"
+        else:
+            signal, summary = "no_evidence", "平台观测数据为空或采集失败"
+        names = {"kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules"}
+        return {"role": "平台观测", "signal": signal, "summary": summary,
+                "evidence_tools": cls._evidence(calls, names)}

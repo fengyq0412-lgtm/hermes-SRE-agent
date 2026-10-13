@@ -23,10 +23,15 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from .code_review import CodeReviewAgent
+from .agent_mode import LLMSREAgent
 from .conversation import ContextMemory, ConversationStore, evidence_for
 from .env_loader import load_dotenv
+from .live_backend import LiveReadOnlyBackend
 from .model_client import ModelConfig, ModelConfigurationError, ModelRequestError, OpenAICompatibleClient, parse_json_reply
+from .observability import ObservabilityConfig
 from .repair import RepairWorkflow, undo_applied_patch
+from .reporting import render_report
+from .triage import TriageAgent
 
 
 MAX_REQUEST_BYTES = 16_384
@@ -165,6 +170,40 @@ class TaskCancelled(Exception):
     """用户已中止本轮；后台线程在当前阻塞调用返回后退出。"""
 
 
+def validate_diagnostic_target(target):
+    """网页运行诊断的全部目标由用户显式指定，不接受模型或演示默认值。"""
+    if not isinstance(target, dict) or set(target) - {"service", "container", "health_url", "strategy", "observability"}:
+        raise ValueError("运行诊断目标格式无效。")
+    service, container, health_url = (target.get(name) for name in ("service", "container", "health_url"))
+    if not isinstance(service, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", service):
+        raise ValueError("运行诊断必须明确填写有效的服务名。")
+    if not isinstance(container, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", container):
+        raise ValueError("运行诊断必须明确填写有效的 Docker 容器名。")
+    try:
+        parsed = urlparse(health_url) if isinstance(health_url, str) else None
+        if parsed:
+            parsed.port  # 提前拒绝非法端口，避免排队后才在采集阶段失败。
+    except ValueError:
+        parsed = None
+    if (not parsed or len(health_url) > 2048 or parsed.scheme not in {"http", "https"}
+            or not parsed.hostname or parsed.username or parsed.password or parsed.fragment
+            or any(char.isspace() or ord(char) < 32 for char in health_url)):
+        raise ValueError("运行诊断必须明确填写无凭据的 http(s) 健康检查地址。")
+    strategy = target.get("strategy", "triage")
+    if not isinstance(strategy, str) or strategy not in {"triage", "agent"}:
+        raise ValueError("运行诊断方式仅支持只读分诊或模型辅助诊断。")
+    raw_observability = target.get("observability", {})
+    if not isinstance(raw_observability, dict) or set(raw_observability) - set(ObservabilityConfig.__dataclass_fields__):
+        raise ValueError("平台观测配置格式无效。")
+    values = {key: None if value == "" else value for key, value in raw_observability.items()}
+    if any(value is not None and not isinstance(value, str) for value in values.values()):
+        raise ValueError("平台观测参数必须是字符串。")
+    config = ObservabilityConfig(**values)
+    return {"service": service, "container": container, "health_url": health_url,
+            "strategy": strategy, "observability": {key: getattr(config, key) for key in config.__dataclass_fields__
+                                               if getattr(config, key) is not None}}
+
+
 class ProjectRegistry:
     """项目由用户通过页面显式添加，记住选择结果以便下次启动使用。"""
 
@@ -275,9 +314,14 @@ class ReviewJobs:
             job["history"] = []
             self.jobs[job["id"]] = job
 
-    def create(self, project_id, question, parent_id=None, allow_sandbox=False, mode="review", test_path="tests"):
-        if not isinstance(mode, str) or mode not in {"auto", "review", "repair"}:
+    def create(self, project_id, question, parent_id=None, allow_sandbox=False, mode="review", test_path="tests",
+               diagnostic_target=None):
+        if not isinstance(mode, str) or mode not in {"auto", "review", "repair", "diagnose"}:
             raise ValueError("任务模式无效。")
+        if mode == "diagnose":
+            diagnostic_target = validate_diagnostic_target(diagnostic_target)
+        elif diagnostic_target is not None:
+            raise ValueError("只有运行诊断任务可以指定服务目标。")
         if not isinstance(test_path, str) or not test_path or len(test_path) > 300:
             raise ValueError("请提供有效测试路径。")
         if type(allow_sandbox) is not bool:
@@ -308,6 +352,7 @@ class ReviewJobs:
             self.jobs[job_id] = {"id": job_id, "project_id": project_id, "question": question.strip(),
                                  "conversation_id": conversation_id, "parent_id": parent_id, "created_at": time.time(),
                                  "status": "queued", "mode": mode, "events": [], "trace": [],
+                                 "diagnostic_target": diagnostic_target,
                                  "trace_path": str(self.trace_dir / f"{job_id}.jsonl") if self.trace_dir else None,
                                  "history": history, "memory": memory, "context": context,
                                  "context_turns": turns, "usage": empty_usage()}
@@ -316,7 +361,7 @@ class ReviewJobs:
                              "details": {"requested_mode": mode, "sandbox_requested": allow_sandbox,
                                          "has_previous_context": bool(history)}})
         self.futures[job_id] = self.executor.submit(
-            self._run, job_id, project, question.strip(), history, allow_sandbox, mode, test_path)
+            self._run, job_id, project, question.strip(), history, allow_sandbox, mode, test_path, diagnostic_target)
         return {"id": job_id, "conversation_id": conversation_id}
 
     def cancel(self, project_id, job_id):
@@ -633,10 +678,43 @@ class ReviewJobs:
                 self._trace(job_id, {"stage": "完成", "event": "verification_incomplete",
                                      "summary": "写回已完成，但后续模型核对未完成", "details": {}})
 
-    def _run(self, job_id, project, question, history, allow_sandbox=False, mode="review", test_path="tests"):
+    def _run_diagnosis(self, job_id, project, question, target):
+        self._event(job_id, {"message": "正在读取指定服务的运行证据（只读）", "kind": "stage"})
+        self._worker_trace(job_id, {"stage": "诊断", "event": "target_confirmed", "summary": "已确认显式运行目标",
+                                     "details": {"service": target["service"], "strategy": target["strategy"],
+                                                 "sources": list(target["observability"])}})
+        backend = LiveReadOnlyBackend(repository=project, observability=ObservabilityConfig(**target["observability"]))
+        if target["strategy"] == "agent":
+            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage),
+                                   self.cancel_events[job_id])
+            diagnosis_agent = LLMSREAgent(backend, client)
+        else:
+            diagnosis_agent = TriageAgent(backend, on_observation=lambda call: self._worker_trace(job_id, {
+                "stage": "取证", "event": "diagnostic_tool_result", "summary": call.tool + (" 失败" if call.error else " 完成"),
+                "details": {"tool": call.tool, "outcome": "failed" if call.error else "completed"},
+            }))
+        run = diagnosis_agent.investigate(question, target["service"], target["health_url"], target["container"])
+        self._check_cancelled(job_id)
+        summary = {"incident_id": run.incident.incident_id, "strategy": target["strategy"],
+                   "tools": [{"name": call.tool, "ok": call.error is None, "error": call.error}
+                             for call in run.calls], "assessments": run.assessments}
+        self._update(job_id, status="completed", answer=render_report(
+            run, approval_message="如需执行修复，请另走受控变更审批流程；此页面未执行任何运行时变更。") +
+                     "\n运行诊断仅提供只读证据和建议；此页面不会执行重启或配置变更。",
+                     diagnostic=summary, steps=[])
+        self._worker_trace(job_id, {"stage": "完成", "event": "diagnosis_completed", "summary": "运行诊断已完成",
+                                     "details": {"tool_calls": len(run.calls), "failed_tools": sum(bool(call.error) for call in run.calls)}})
+
+    def _run(self, job_id, project, question, history, allow_sandbox=False, mode="review", test_path="tests",
+             diagnostic_target=None):
         try:
             self._update(job_id, status="running")
             self._worker_trace(job_id, {"stage": "任务", "event": "started", "summary": "后台任务开始执行", "details": {}})
+            if mode == "diagnose":
+                with self.lock:
+                    self.jobs[job_id].pop("context_turns", None)
+                self._run_diagnosis(job_id, project, question, diagnostic_target)
+                return
             client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage),
                                    self.cancel_events[job_id])
             with self.lock:
@@ -694,7 +772,8 @@ class ReviewJobs:
         except ModelRequestError as exc:
             self._fail_job(job_id, str(exc), "model_error", "模型请求或响应失败，任务停止")
         except Exception:
-            self._fail_job(job_id, "审查过程中发生错误，请检查项目是否可读后重试。",
+            self._fail_job(job_id, "运行诊断发生错误，请检查目标与服务权限后重试。" if mode == "diagnose" else
+                           "审查过程中发生错误，请检查项目是否可读后重试。",
                            "internal_error", "执行异常，任务停止")
 
 
@@ -763,7 +842,8 @@ class HermesRequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("项目或会话标识格式错误。")
                 self._send_json(202, self.jobs.create(payload["project_id"], payload.get("question"),
                                                     payload.get("parent_id"), payload.get("allow_sandbox", False),
-                                                    payload.get("mode", "auto"), payload.get("test_path", "tests")))
+                                                    payload.get("mode", "auto"), payload.get("test_path", "tests"),
+                                                    payload.get("diagnostic_target")))
             elif self.path.startswith("/api/reviews/") and self.path.endswith("/cancel"):
                 if not isinstance(payload.get("project_id"), str):
                     raise ValueError("项目标识格式错误。")

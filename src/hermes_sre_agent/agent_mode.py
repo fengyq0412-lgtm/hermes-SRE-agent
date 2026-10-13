@@ -47,7 +47,8 @@ class LLMSREAgent:
         self.model_client = model_client
         self.max_steps = max_steps
         all_read_only = [spec.name for spec in ControlledTools.list_specs() if spec.read_only]
-        self.allowed_tools = allowed_tools if allowed_tools is not None else all_read_only
+        available = getattr(backend, "available_tools", all_read_only)
+        self.allowed_tools = allowed_tools if allowed_tools is not None else [name for name in all_read_only if name in available]
 
     def investigate(self, user_query: str, service: str = "legal-agent",
                     health_url: Optional[str] = None, container: Optional[str] = None) -> RunResult:
@@ -92,7 +93,7 @@ class LLMSREAgent:
                     result = self.tools.call(tool_name, **arguments)
                     calls.append(ToolCall(tool_name, arguments, result))
                     tool_result: Dict[str, Any] = {"ok": True, "result": result}
-                except (ToolExecutionError, KeyError, PermissionError, ValueError) as exc:
+                except (ToolExecutionError, KeyError, PermissionError, TypeError, ValueError) as exc:
                     calls.append(ToolCall(tool_name, arguments, None, error=str(exc)))
                     tool_result = {"ok": False, "error": str(exc)}
                 states.append(f"OBSERVE:{tool_name}")

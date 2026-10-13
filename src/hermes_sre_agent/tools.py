@@ -23,6 +23,9 @@ TOOL_SPECS = {
     "git_recent_changes": ToolSpec("git_recent_changes", "最近的部署相关变更", True),
     "config_diff": ToolSpec("config_diff", "当前配置与前一版本的差异", True),
     "git_code_review": ToolSpec("git_code_review", "限定长度的最近 Git 代码差异，供部署关联审查", True),
+    "kubernetes_workloads": ToolSpec("kubernetes_workloads", "指定 context/namespace/selector 的工作负载状态", True),
+    "prometheus_scrape": ToolSpec("prometheus_scrape", "指定 job 的 Prometheus up 抓取状态", True),
+    "grafana_alert_rules": ToolSpec("grafana_alert_rules", "Grafana 已配置告警规则摘要（非触发状态）", True),
     "restart_service": ToolSpec("restart_service", "重启服务", False, True),
     "edit_config": ToolSpec("edit_config", "修改白名单配置文件", False, True),
 }

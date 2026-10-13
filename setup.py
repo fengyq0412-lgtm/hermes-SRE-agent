@@ -3,7 +3,7 @@ from setuptools import find_packages, setup
 
 setup(
     name="hermes-sre-agent",
-    version="0.4.0",
+    version="0.5.0",
     description="证据优先、审批受控的 SRE 故障诊断智能体",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",

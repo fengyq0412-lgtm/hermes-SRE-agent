@@ -68,6 +68,27 @@ test('运行中可中止，同一会话可继续任务', () => {
   assert.ok(script.includes("parent_id:c.parent,mode"));
 });
 
+test('网页运行诊断显式收集目标并将观测源留在只读任务', () => {
+  for (const id of ['task-mode', 'diagnostic-service', 'diagnostic-container', 'diagnostic-health',
+                    'diagnostic-kube-context', 'diagnostic-prometheus-url', 'diagnostic-grafana-token-env']) {
+    assert.ok(html.includes(`id="${id}"`));
+  }
+  const inputs = {
+    'diagnostic-service': 'hermes-web', 'diagnostic-container': 'hermes-web',
+    'diagnostic-health': 'http://127.0.0.1:8765/health', 'diagnostic-strategy': 'triage',
+    'diagnostic-kube-context': 'prod', 'diagnostic-kube-namespace': 'hermes',
+    'diagnostic-kube-selector': 'app=hermes-web', 'diagnostic-prometheus-url': '',
+    'diagnostic-prometheus-job': '', 'diagnostic-grafana-url': '', 'diagnostic-grafana-token-env': '',
+  };
+  context.$ = id => ({value: inputs[id]});
+  const target = JSON.parse(JSON.stringify(context.diagnosticTarget()));
+  assert.deepEqual(target, {service: 'hermes-web', container: 'hermes-web',
+    health_url: 'http://127.0.0.1:8765/health', strategy: 'triage',
+    observability: {kube_context: 'prod', kube_namespace: 'hermes', kube_selector: 'app=hermes-web'}});
+  assert.ok(script.includes("mode=isDiagnosis?'diagnose'"));
+  assert.ok(script.includes('diagnostic_target:target'));
+});
+
 test('多块修改的原行号、新行号和增删统计正确', () => {
   const diff = parse('--- a/main.py\n+++ b/main.py\n@@ -10,3 +10,4 @@\n same\n-old\n+new\n+extra\n tail\n@@ -30 +31 @@\n-before\n+after\n');
   assert.equal(diff.removed, 2);

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .tools import ToolExecutionError
+from .observability import ObservabilityConfig, grafana_alert_rules, prometheus_scrape
 
 
 class _NoHealthRedirect(HTTPRedirectHandler):
@@ -32,9 +33,11 @@ class LiveReadOnlyBackend:
 
     _container_name = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
-    def __init__(self, repository: Optional[Path] = None, timeout_seconds: int = 5):
+    def __init__(self, repository: Optional[Path] = None, timeout_seconds: int = 5,
+                 observability: Optional[ObservabilityConfig] = None):
         self.repository = (repository or Path.cwd()).resolve()
         self.timeout_seconds = timeout_seconds
+        self.observability = observability or ObservabilityConfig()
         self._handlers: Dict[str, Callable[..., Any]] = {
             "system_metrics": self._system_metrics,
             "gpu_metrics": self._gpu_metrics,
@@ -45,6 +48,16 @@ class LiveReadOnlyBackend:
             "config_diff": self._config_diff,
             "git_code_review": self._git_code_review,
         }
+        optional = {
+            "kubernetes_workloads": self._kubernetes_workloads,
+            "prometheus_scrape": self._prometheus_scrape,
+            "grafana_alert_rules": self._grafana_alert_rules,
+        }
+        self._handlers.update({name: optional[name] for name in self.observability.enabled_tools})
+
+    @property
+    def available_tools(self) -> List[str]:
+        return list(self._handlers)
 
     def read(self, tool: str, **arguments: Any) -> Any:
         handler = self._handlers.get(tool)
@@ -68,6 +81,49 @@ class LiveReadOnlyBackend:
             raise ToolExecutionError(f"{' '.join(command[:2])} 执行失败：{message[:240]}")
         # Docker 把容器标准错误日志写到命令的 stderr；成功时两路都是应用证据。
         return completed.stdout + completed.stderr if command[:2] == ["docker", "logs"] else completed.stdout
+
+    def _kubernetes_workloads(self, **arguments: Any) -> Dict[str, Any]:
+        if arguments:
+            raise ToolExecutionError("Kubernetes 目标由启动参数固定，工具调用不能附加参数")
+        config = self.observability
+        output = self._run([
+            "kubectl", "--context", config.kube_context, "--namespace", config.kube_namespace,
+            "--request-timeout", f"{self.timeout_seconds}s", "get", "deployments,pods",
+            "--selector", config.kube_selector, "--output", "json",
+        ])
+        if len(output.encode("utf-8")) > 128 * 1024:
+            raise ToolExecutionError("Kubernetes 响应超过 128 KiB 上限")
+        try:
+            payload = json.loads(output)
+        except ValueError as exc:
+            raise ToolExecutionError("kubectl 未返回有效 JSON") from exc
+        if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+            raise ToolExecutionError("kubectl 返回的资源列表格式无效")
+        workloads = []
+        for item in payload["items"][:50]:
+            if not isinstance(item, dict):
+                continue
+            metadata, status = item.get("metadata", {}), item.get("status", {})
+            if not isinstance(metadata, dict) or not isinstance(status, dict):
+                continue
+            workloads.append({"kind": str(item.get("kind", ""))[:30],
+                              "name": str(metadata.get("name", ""))[:200],
+                              "phase": str(status.get("phase", ""))[:50],
+                              "ready_replicas": status.get("readyReplicas"),
+                              "replicas": status.get("replicas")})
+        return {"context": config.kube_context, "namespace": config.kube_namespace,
+                "selector": config.kube_selector, "workloads": workloads,
+                "truncated": len(payload["items"]) > 50}
+
+    def _prometheus_scrape(self, **arguments: Any) -> Dict[str, Any]:
+        if arguments:
+            raise ToolExecutionError("Prometheus 查询由启动参数固定，工具调用不能附加参数")
+        return prometheus_scrape(self.observability, self.timeout_seconds)
+
+    def _grafana_alert_rules(self, **arguments: Any) -> Dict[str, Any]:
+        if arguments:
+            raise ToolExecutionError("Grafana 目标由启动参数固定，工具调用不能附加参数")
+        return grafana_alert_rules(self.observability, self.timeout_seconds)
 
     def _system_metrics(self) -> Dict[str, Any]:
         disk = shutil.disk_usage(self.repository)
