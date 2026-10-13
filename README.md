@@ -6,16 +6,16 @@
 观察 → 诊断 → 制定计划 → 人工审批 → 修复 → 验证
 ```
 
-Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库包含可复现的故障诊断链路、本机只读采集，以及独立的 V0.2 人工运维变更命令。
+Hermes 的目标不是抢先猜出答案，而是把每条结论和真实采集结果关联起来；任何会改变状态的操作，都不能绕过人工审批。本仓库包含可复现的故障诊断链路、本机只读采集、受控运维变更命令、诊断评测，以及 V0.4 多角色分诊和事件记忆。
 
 ## 一分钟演示
 
 ```bash
-# 使用 Conda 建立环境（首次执行）
-conda env create -f environment.yml
-conda activate hermes-sre-agent
+# 建立 Python 3.9+ 虚拟环境（首次执行）
+python3 -m venv .venv
+source .venv/bin/activate
 
-# requirements.txt 会以可编辑模式安装本项目，获得 hermes 和 hermes-change 命令
+# requirements.txt 会以可编辑模式安装本项目及命令行入口
 pip install -r requirements.txt
 
 # 无需模型密钥的确定性演示
@@ -178,6 +178,24 @@ hermes --interactive --mode rules --scenario api_slow
 
 交互模式中输入故障描述即可诊断；输入 `exit` 或 `quit` 退出。每次提问都会创建独立事件编号，并分别保存报告和 trajectory，避免多个事故的证据混在一起。
 
+### V0.4 多角色分诊与事件记忆
+
+`triage` 模式由可用性、性能、变更三个固定角色检查同一轮只读采集结果，再由协调器决定哪些线索可以进入根因判断。它是可复现的规则分诊，不需要模型密钥，也不会创建多个独立模型会话：
+
+```bash
+hermes "legal-agent 为什么变慢？" --mode triage --scenario api_slow
+hermes-eval --mode triage
+```
+
+每次 CLI 诊断会在 `--output-dir`（默认 `artifacts/`）中保存 `incidents.sqlite3`。事件索引只包含服务名、场景或实时来源、结构化症状、诊断状态、时间和报告路径；原始提问、日志和工具输出仍只在当次 trajectory 中。之后同一服务、同一来源的相似症状会在新报告中列出，供人工回看，**不会提高本次诊断置信度或直接触发修复**。可用以下命令查看或暂停索引：
+
+```bash
+hermes --history --service legal-agent --backend scenario
+hermes "只做本次诊断" --mode triage --no-memory
+```
+
+查询实时事件时使用 `--backend live`；自定义 `--output-dir` 后，诊断与历史查询应使用同一目录。索引数据库仅当前本机用户可读写；报告和 trajectory 的敏感信息仍按原有文件管理要求处理。网页项目会话记忆与这里的 SRE 事件索引相互独立。
+
 默认演示场景稳定复现了一个可信的 AI 推理事故：
 
 | 信号 | 证据 |
@@ -250,10 +268,13 @@ hermes "legal-agent 为什么变慢了？" \
 除了演示场景，还可以通过固定的、无 Shell 拼接的命令读取本机状态：
 
 ```bash
-hermes "检查本机 legal-agent 是否正常" --mode rules --backend live --service legal-agent
+hermes "检查本机 legal-agent 是否正常" --mode rules --backend live \
+  --service legal-agent --container legal-agent --health-url http://127.0.0.1:8000/health
 ```
 
-本机模式只会尝试采集系统负载、NVIDIA GPU、Docker、HTTP 健康检查和 Git 差异。环境未安装 Docker、没有 NVIDIA GPU、服务不可访问等情况会如实写入报告，且诊断会因关键证据缺失停止；绝不会把失败伪装成成功。
+本机模式只会尝试采集系统负载、NVIDIA GPU、Docker、HTTP 健康检查和 Git 差异。Linux 主机 CPU 使用率由 `/proc/stat` 短时间采样得到；其他系统单独展示一分钟负载估算，不把它当成真实 CPU 使用率进行归因。Docker 同时列出运行中和已停止的容器，运行中容器附带 `docker stats` 的 CPU、内存数据；资源统计失败时仍保留容器状态。容器 stdout 和 stderr 日志都会进入最近日志证据。Git 返回最近五次提交，并只从最新已提交的 JSON/YAML/TOML/INI/CFG 文件差异中提取 `batch_size` 变化。环境未安装 Docker、没有 NVIDIA GPU、服务不可访问等情况会如实写入报告，且诊断会因关键证据缺失停止。
+
+Git 提交不等同于运行中的版本。即使仓库配置变更、GPU 压力和排队日志吻合，若未核对实际部署与运行时配置，规则诊断只把它列为中等置信度的线索，不会宣布根因已确认。Agent 模式的健康检查 URL 与容器日志目标固定为本次命令指定的 `--health-url`、`--container`；需诊断其他目标时重新指定参数。
 
 > 本机模式仍然只有只读能力。`restart_service` 与 `edit_config` 只是已登记的危险工具，调用会在工具层被拒绝。
 
@@ -268,7 +289,7 @@ hermes "检查本机 legal-agent 是否正常" --mode rules --backend live --ser
 | NVIDIA 驱动与 `nvidia-smi` | 仅诊断 GPU 推理时需要 | Apple Silicon / 普通 Mac 没有 NVIDIA GPU，这是正常情况。 |
 | 有至少一次提交的 Git 仓库 | 仅分析发布变更时需要 | 首次初始化、尚未提交的仓库没有可比较的历史版本。 |
 
-`wps` 是桌面应用名称，不是 Hermes V0.1 支持的 HTTP / Docker 服务对象。若要诊断本机 WPS，应另行实现 macOS 应用进程、崩溃日志和性能采集适配器；它不应被当成 `http://wps:8000/health` 一类服务。
+`wps` 是桌面应用名称，不是 Hermes 当前支持的 HTTP / Docker 服务对象。若要诊断本机 WPS，应另行实现 macOS 应用进程、崩溃日志和性能采集适配器；它不应被当成 `http://wps:8000/health` 一类服务。
 
 ## 架构
 
@@ -298,11 +319,21 @@ ScenarioBackend（可复现演示） / LiveReadOnlyBackend（本机只读）
 
 ### 代码审查是否需要沙箱？
 
-需要分层处理：**只读差异审查**不需要运行代码，但仍应在只读工作区中进行，限制读取范围、返回长度，并把 Git diff / 日志视为不可信输入，防止提示注入。Hermes 的 `git_code_review` 正是这一层：仅调用禁用外部 diff 与分页器的受限 `git diff`，最多返回 20,000 字符，绝不执行仓库内容。
+需要分层处理：**只读差异审查**不需要运行代码，但仍应在只读工作区中进行，限制读取范围、返回长度，并把 Git 差异 / 日志视为不可信输入，防止提示注入。Hermes 的 `git_code_review` 正是这一层：仅调用禁用外部 diff 与分页器的受限 `git show`，最多返回 20,000 字符，绝不执行仓库内容。
 
 **运行测试、构建、复现故障或执行脚本**则必须进入独立沙箱：临时 worktree 或容器、无默认网络、无生产密钥、CPU / 内存 / 时长限制。它与 SRE 运维变更是两个独立权限域。页面的项目测试已使用上文所述的一次性 Docker 沙箱；沙箱验证通过仍不能代替人工批准写回。
 
 ## 质量检查
+
+诊断评测提供八个不依赖模型和 Docker 的用例，涵盖慢接口、明确配置错误、证据不足、健康检查缺失、CPU 压力、容器停止及仓库变更尚未部署等情况。升级后重新执行 `pip install -r requirements.txt`，然后运行：
+
+```bash
+hermes-eval
+# V0.4 三角色分诊使用相同的预期用例：hermes-eval --mode triage
+# 需要保存完整结果时：hermes-eval --output evaluation-result.json
+```
+
+输出包含每个用例的根因、置信度、是否需审批以及通过情况；任何用例不通过会返回非零退出码。用例定义在 `demo/evaluation_cases.json`，可通过 `--cases` 指定其他用例文件。评测验证的是确定性规则诊断，不代表真实服务联调或模型诊断已通过。
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
@@ -321,9 +352,9 @@ node --test tests/test_diff_ui.cjs
 ## 路线图
 
 - **V0.1：** Agent 工具规划、可复现诊断、报告、轨迹与本机只读采集。
-- **V0.2（当前）：** 独立人工 CLI 的一次性审批令牌、白名单配置变更、服务重启与变更后验证。
-- **V0.3：** Docker / Linux / HTTP / Git 的更完整实时适配器与评测用例集。
-- **V0.4：** 多智能体分诊与事件记忆。
+- **V0.2：** 独立人工 CLI 的一次性审批令牌、白名单配置变更、服务重启与变更后验证。
+- **V0.3：** Docker 容器状态与资源、Linux CPU、HTTP 探针目标约束、Git 提交与配置线索，以及可复现的诊断评测用例集。
+- **V0.4（当前）：** 三角色只读分诊、协调决策与跨事件的结构化症状索引。
 - **V0.5：** Kubernetes、Prometheus、Grafana 集成。
 
 ## 项目结构

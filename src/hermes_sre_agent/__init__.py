@@ -4,5 +4,6 @@ from .agent import SREAgent
 from .agent_mode import LLMSREAgent
 from .backends import ScenarioBackend
 from .live_backend import LiveReadOnlyBackend
+from .triage import TriageAgent
 
-__all__ = ["SREAgent", "LLMSREAgent", "ScenarioBackend", "LiveReadOnlyBackend"]
+__all__ = ["SREAgent", "LLMSREAgent", "TriageAgent", "ScenarioBackend", "LiveReadOnlyBackend"]

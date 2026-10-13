@@ -14,13 +14,21 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 
 TOKEN_TTL_SECONDS = 600
 MAX_CONFIG_BYTES = 64_000
 CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+class _NoHealthRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+_HEALTH_OPENER = build_opener(_NoHealthRedirect())
 
 
 class RemediationError(ValueError):
@@ -113,7 +121,7 @@ class LocalDockerAdapter:
     def health(self, url):
         started = time.monotonic()
         try:
-            with urlopen(Request(url, method="GET"), timeout=8) as response:
+            with _HEALTH_OPENER.open(Request(url, method="GET"), timeout=8) as response:
                 status, body = response.status, response.read(16_385)
         except HTTPError as exc:
             status, body = exc.code, exc.read(16_385)

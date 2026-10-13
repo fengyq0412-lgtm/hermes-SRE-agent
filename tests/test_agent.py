@@ -93,3 +93,19 @@ class AgentWorkflowTests(unittest.TestCase):
 
         self.assertNotIn("健康检查证据缺失", run.diagnosis.root_cause)
         self.assertIn("HTTP 404", "\n".join(run.diagnosis.observations))
+
+    def test_repository_config_change_requires_runtime_confirmation(self):
+        class RepositoryOnlyBackend:
+            def __init__(self):
+                self.scenario = ScenarioBackend("api_slow")
+
+            def read(self, tool, **arguments):
+                result = self.scenario.read(tool, **arguments)
+                if tool == "config_diff":
+                    return {**result, "source": "repository_latest_commit", "runtime_config_verified": False}
+                return result
+
+        run = SREAgent(RepositoryOnlyBackend()).investigate("接口为何变慢？")
+        self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))
+        self.assertEqual(run.diagnosis.confidence, "中")
+        self.assertFalse(run.diagnosis.needs_approval)

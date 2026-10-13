@@ -13,9 +13,18 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .tools import ToolExecutionError
+
+
+class _NoHealthRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        return None
+
+
+_HEALTH_OPENER = build_opener(_NoHealthRedirect())
 
 
 class LiveReadOnlyBackend:
@@ -57,31 +66,54 @@ class LiveReadOnlyBackend:
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip() or "未知错误"
             raise ToolExecutionError(f"{' '.join(command[:2])} 执行失败：{message[:240]}")
-        return completed.stdout
+        # Docker 把容器标准错误日志写到命令的 stderr；成功时两路都是应用证据。
+        return completed.stdout + completed.stderr if command[:2] == ["docker", "logs"] else completed.stdout
 
     def _system_metrics(self) -> Dict[str, Any]:
         disk = shutil.disk_usage(self.repository)
         load = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
         cpu_count = os.cpu_count() or 1
-        # 标准库没有跨平台的瞬时 CPU 百分比；用一分钟负载给出明确标记的近似值。
-        cpu_percent = min(round(load[0] / cpu_count * 100, 1), 100.0)
+        linux_cpu = self._linux_cpu_used_percent()
         memory_percent = self._memory_used_percent()
         return {
-            "cpu_percent": cpu_percent,
-            "cpu_measurement": "按一分钟负载估算",
+            "cpu_percent": linux_cpu if linux_cpu is not None else "未采集",
+            "cpu_measurement": "Linux /proc/stat 100ms 采样" if linux_cpu is not None else "当前系统未提供 CPU 使用率采样",
+            "load_based_estimate_percent": min(round(load[0] / cpu_count * 100, 1), 100.0),
             "memory_used_percent": memory_percent,
             "disk_used_percent": round(disk.used / disk.total * 100, 1),
             "load_average": [round(value, 2) for value in load],
         }
+
+    @staticmethod
+    def _linux_cpu_used_percent() -> Optional[float]:
+        def snapshot() -> tuple[int, int]:
+            parts = Path("/proc/stat").read_text(encoding="ascii").splitlines()[0].split()
+            if parts[0] != "cpu" or len(parts) < 5:
+                raise ValueError("/proc/stat 缺少 CPU 数据")
+            values = [int(part) for part in parts[1:9]]
+            idle = values[3] + (values[4] if len(values) > 4 else 0)
+            return sum(values), idle
+
+        try:
+            first_total, first_idle = snapshot()
+            time.sleep(0.1)
+            second_total, second_idle = snapshot()
+        except (OSError, ValueError, IndexError):
+            return None
+        delta = second_total - first_total
+        return round((1 - (second_idle - first_idle) / delta) * 100, 1) if delta > 0 else None
 
     def _memory_used_percent(self) -> Any:
         meminfo = Path("/proc/meminfo")
         if not meminfo.exists():
             return "不可用（当前系统未提供 /proc/meminfo）"
         values = {}
-        for line in meminfo.read_text(encoding="utf-8").splitlines():
-            key, value = line.split(":", 1)
-            values[key] = int(value.strip().split()[0])
+        try:
+            for line in meminfo.read_text(encoding="utf-8").splitlines():
+                key, value = line.split(":", 1)
+                values[key] = int(value.strip().split()[0])
+        except (OSError, ValueError, IndexError):
+            return "不可用（无法读取 /proc/meminfo）"
         total, available = values.get("MemTotal", 0), values.get("MemAvailable", 0)
         return round((total - available) / total * 100, 1) if total else "不可用"
 
@@ -96,17 +128,35 @@ class LiveReadOnlyBackend:
         return {"gpu": name, "gpu_utilization": int(utilization), "memory_used_mb": int(used), "memory_total_mb": int(total)}
 
     def _docker_list(self) -> List[Dict[str, Any]]:
-        output = self._run(["docker", "ps", "--format", "{{json .}}"])
+        output = self._run(["docker", "ps", "-a", "--format", "{{json .}}"])
         containers = []
         for line in output.splitlines():
             if not line.strip():
                 continue
             item = json.loads(line)
-            containers.append({
-                "name": item.get("Names", ""),
-                "status": "running" if item.get("Status", "").startswith("Up") else item.get("Status", "unknown"),
-                "cpu": "未采集", "memory": "未采集",
-            })
+            state = item.get("State", "").lower()
+            status = item.get("Status", "")
+            containers.append({"name": item.get("Names", ""),
+                               "status": state or ("running" if status.startswith("Up") else status.lower() or "unknown"),
+                               "detail": status, "cpu": "未采集", "memory": "未采集"})
+        if not any(item["status"] == "running" for item in containers):
+            return containers
+        try:
+            stats = self._run(["docker", "stats", "--no-stream", "--format", "{{json .}}"])
+            by_name = {item["name"]: item for item in containers}
+            for line in stats.splitlines():
+                if not line.strip():
+                    continue
+                item = json.loads(line)
+                target = by_name.get(item.get("Name"))
+                if target and target["status"] == "running":
+                    target["cpu"] = item.get("CPUPerc", "未采集")
+                    target["memory"] = item.get("MemUsage", "未采集")
+                    target["memory_percent"] = item.get("MemPerc", "未采集")
+        except (ToolExecutionError, ValueError) as exc:
+            for item in containers:
+                if item["status"] == "running":
+                    item["resource_error"] = str(exc)
         return containers
 
     def _docker_logs(self, container: str, tail: int = 200, **_: Any) -> Dict[str, List[str]]:
@@ -120,11 +170,13 @@ class LiveReadOnlyBackend:
         return {"lines": output.splitlines()}
 
     def _service_health(self, url: str, **_: Any) -> Dict[str, Any]:
-        if not url.startswith(("http://", "https://")):
+        parsed = urlparse(url) if isinstance(url, str) else None
+        if (not parsed or parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username or parsed.password or parsed.fragment):
             raise ToolExecutionError("健康检查地址仅支持 http 或 https")
         started = time.perf_counter()
         try:
-            with urlopen(Request(url, method="GET"), timeout=self.timeout_seconds) as response:
+            with _HEALTH_OPENER.open(Request(url, method="GET"), timeout=self.timeout_seconds) as response:
                 status = response.status
         except HTTPError as exc:
             # 4xx/5xx 是服务状态的重要证据，并不等同于采集工具失败。
@@ -134,39 +186,70 @@ class LiveReadOnlyBackend:
         return {"status_code": status, "latency_ms": round((time.perf_counter() - started) * 1000, 1)}
 
     def _git_recent_changes(self) -> Dict[str, Any]:
-        raw = self._run(["git", "-C", str(self.repository), "log", "-1", "--format=%h%x00%s%x00%ci", "--name-only"])
-        lines = raw.splitlines()
-        header = lines[0].split("\x00") if lines else []
-        if len(header) != 3:
+        raw = self._run(["git", "-C", str(self.repository), "log", "-5", "--format=%h%x00%s%x00%ci", "--name-only"])
+        commits = []
+        for line in raw.splitlines():
+            if "\x00" in line:
+                header = line.split("\x00")
+                if len(header) != 3:
+                    raise ToolExecutionError("无法解析最近一次 Git 提交")
+                commits.append({"sha": header[0], "message": header[1], "date": header[2], "files": []})
+            elif line and commits and len(commits[-1]["files"]) < 100:
+                commits[-1]["files"].append(line)
+        if not commits:
             raise ToolExecutionError("无法解析最近一次 Git 提交")
-        files = [line for line in lines[1:] if line]
         return {
-            "summary": f"最近提交 {header[0]}：{header[1]}（{header[2]}）",
-            "commits": [{"sha": header[0], "message": header[1], "files": files}],
+            "summary": f"最近提交 {commits[0]['sha']}：{commits[0]['message']}（{commits[0]['date']}）；共读取 {len(commits)} 次提交",
+            "commits": commits,
         }
 
-    def _config_diff(self) -> Dict[str, Any]:
-        # 禁用外部 diff 与分页器，审查过程只读取 Git 原生文本，不执行仓库自定义程序。
-        diff = self._run([
+    def _latest_git_diff(self) -> str:
+        # git show 兼容只有初次提交的仓库；不运行外部 diff 或分页器。
+        return self._run([
             "git", "--no-pager", "-c", "core.pager=cat", "-C", str(self.repository),
-            "diff", "--no-ext-diff", "HEAD~1", "HEAD", "--",
+            "show", "--format=", "--no-ext-diff", "--no-renames", "HEAD", "--",
         ])
+
+    def _config_diff(self) -> Dict[str, Any]:
+        diff = self._latest_git_diff()
         changes = []
-        removed = re.findall(r"^-\s*batch_size\s*[:=]\s*(\d+)", diff, flags=re.MULTILINE)
-        added = re.findall(r"^\+\s*batch_size\s*[:=]\s*(\d+)", diff, flags=re.MULTILINE)
-        if removed and added:
-            changes.append({"key": "batch_size", "before": int(removed[-1]), "after": int(added[-1])})
-        return {"path": "由 Git 差异自动识别", "changes": changes, "raw_diff_available": bool(diff.strip())}
+        current_path = None
+        removed = []
+        added = []
+        pattern = re.compile(r"^[+-]\s*['\"]?batch_size['\"]?\s*[:=]\s*(\d+)\b")
+
+        def flush() -> None:
+            if current_path and len(removed) == len(added) == 1:
+                changes.append({"path": current_path, "key": "batch_size", "before": removed[0], "after": added[0]})
+
+        for line in diff.splitlines():
+            if line.startswith("diff --git "):
+                flush()
+                match = re.match(r"diff --git a/(.+) b/(.+)$", line)
+                path = match.group(2) if match else ""
+                current_path = path if Path(path).suffix.lower() in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"} else None
+                removed, added = [], []
+            elif line.startswith("@@"):
+                flush()
+                removed, added = [], []
+            elif current_path and not line.startswith(("---", "+++")):
+                match = pattern.match(line)
+                if match:
+                    if line.startswith("-"):
+                        removed.append(int(match.group(1)))
+                    else:
+                        added.append(int(match.group(1)))
+        flush()
+        return {"path": changes[0]["path"] if changes else "未发现已提交的配置字段变更",
+                "changes": changes, "raw_diff_available": bool(diff.strip()),
+                "source": "repository_latest_commit", "runtime_config_verified": False}
 
     def _git_code_review(self) -> Dict[str, Any]:
         """仅返回最新提交差异的有限片段，既不执行代码也不暴露整个仓库。"""
-        diff = self._run([
-            "git", "--no-pager", "-c", "core.pager=cat", "-C", str(self.repository),
-            "diff", "--no-ext-diff", "HEAD~1", "HEAD", "--",
-        ])
+        diff = self._latest_git_diff()
         limit = 20_000
         return {
-            "base": "HEAD~1",
+            "base": "HEAD 的父提交（初次提交时为空树）",
             "head": "HEAD",
             "diff": diff[:limit],
             "truncated": len(diff) > limit,

@@ -169,11 +169,25 @@ class SREAgent:
                 needs_approval=False,
             )
 
-        if batch_change and latency is not None and latency >= 1000 and vram_ratio >= 0.85:
+        queue_evidence = "queue_wait" in log_text or "gpu_memory_pressure" in log_text
+        if (batch_change and isinstance(status_code, int) and 200 <= status_code < 300
+                and latency is not None and latency >= 1000 and vram_ratio >= 0.85 and queue_evidence):
             before, after = batch_change["before"], batch_change["after"]
+            if config.get("source") == "repository_latest_commit" and not config.get("runtime_config_verified"):
+                return Diagnosis(
+                    observations=observations,
+                    evidence=evidence + [f"仓库配置差异：{batch_change.get('path', '未知文件')} 的 batch_size {before} → {after}"],
+                    hypothesis="仓库中的批大小变更可能与当前 GPU 压力和排队延迟有关。",
+                    verification="仓库提交、GPU 指标和日志相符，但尚未确认该提交已部署及运行时配置值。",
+                    root_cause="未确定——发现批大小变更线索，仍需核对实际部署版本与运行时配置。",
+                    confidence="中",
+                    remediation=["核对容器使用的镜像版本与运行时 batch_size，再决定是否回退。"],
+                    risk="未提出变更操作。",
+                    needs_approval=False,
+                )
             return Diagnosis(
                 observations=observations,
-                evidence=evidence + [f"配置差异：batch_size {before} → {after}"],
+                evidence=evidence + [f"配置差异：{batch_change.get('path', config.get('path', '未知配置'))} 的 batch_size {before} → {after}"],
                 hypothesis="更大的推理批大小挤占了 GPU 显存，并增加请求排队时间。",
                 verification="延迟上升、显存接近耗尽、队列告警和本次发布的批大小变更相互印证。",
                 root_cause=f"reranker 的 batch_size 从 {before} 调整为 {after}，导致 GPU 显存压力。",

@@ -41,6 +41,9 @@ class RunResult:
     diagnosis: Diagnosis
     calls: List[ToolCall]
     state_history: List[str]
+    assessments: List[Dict[str, Any]] = field(default_factory=list)
+    related_incidents: List[Dict[str, Any]] = field(default_factory=list)
+    memory_error: Optional[str] = None
 
     def trajectory(self) -> Dict[str, Any]:
         root_cause = self.diagnosis.root_cause.strip()
@@ -52,4 +55,7 @@ class RunResult:
             "actions": [],
             "success": bool(root_cause) and not root_cause.startswith("未确定"),
             "state_history": self.state_history,
+            "assessments": self.assessments,
+            "related_incidents": self.related_incidents,
+            "memory_error": self.memory_error,
         }

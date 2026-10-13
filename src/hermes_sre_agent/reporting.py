@@ -11,6 +11,11 @@ def render_report(run: RunResult) -> str:
         f"**症状：** {i.symptom}", f"**严重性：** {'中等' if d.confidence == '高' else '需要人工研判'}", "",
         "# 观察结果", "", *[f"- {item}" for item in d.observations], "",
         "# 证据", "", *[f"- {item}" for item in d.evidence], "",
+        *(["# 分诊角色", "", *[f"- {item['role']}：{item['summary']}（依据：{', '.join(item['evidence_tools']) or '无'}）"
+                               for item in run.assessments], ""] if run.assessments else []),
+        *(["# 相关历史事件", "", *[f"- `{item['incident_id']}`：{item['category']}，{item['outcome']}，报告：{item['report_path']}"
+                                   for item in run.related_incidents], ""] if run.related_incidents else []),
+        *(["# 事件记忆", "", f"事件记忆不可用：{run.memory_error}", ""] if run.memory_error else []),
         "# 假设与验证", "", d.hypothesis, "", d.verification, "",
         "# 根因", "", f"{d.root_cause}", f"\n**置信度：** {d.confidence}", "",
         "# 建议修复方案", "", *[f"{idx}. {item}" for idx, item in enumerate(d.remediation, 1)], "",

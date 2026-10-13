@@ -84,3 +84,13 @@ class LlmAgentTests(unittest.TestCase):
 
         self.assertEqual(run.calls[0].error, "当前 Agent 任务未获授权调用此工具。")
         self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))
+
+    def test_model_cannot_change_service_health_target(self):
+        model = FakeModelClient([
+            json.dumps({"type": "tool_call", "tool": "service_health", "arguments": {"url": "http://other-host/health"}}),
+            json.dumps({"type": "final", "diagnosis": {"evidence_tools": ["service_health"], "root_cause": "伪造结论"}}),
+        ])
+        run = LLMSREAgent(ScenarioBackend("api_slow"), model).investigate(
+            "诊断服务", health_url="http://legal-agent:8000/health")
+        self.assertIn("采集目标与本次诊断指定的服务不一致", run.calls[0].error)
+        self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))

@@ -1,0 +1,65 @@
+[
+  {
+    "id": "slow-with-gpu-and-config-evidence",
+    "scenario": "api_slow",
+    "query": "接口为何变慢？",
+    "expected": {"root_contains": "batch_size 从 16 调整为 64", "confidence": "高", "needs_approval": true, "success": true}
+  },
+  {
+    "id": "explicit-missing-environment",
+    "scenario": "api_500",
+    "query": "接口为什么返回 500？",
+    "expected": {"root_contains": "MODEL_ENDPOINT", "confidence": "高", "needs_approval": true, "success": true}
+  },
+  {
+    "id": "generic-500-remains-unknown",
+    "scenario": "api_500",
+    "query": "接口为什么返回 500？",
+    "overrides": {"docker_logs": {"lines": ["ERROR request failed"]}},
+    "expected": {"root_contains": "未确定", "confidence": "低", "needs_approval": false, "success": false}
+  },
+  {
+    "id": "missing-health-stops-diagnosis",
+    "scenario": "api_slow",
+    "query": "服务是否正常？",
+    "fail_tools": ["service_health"],
+    "expected": {"root_contains": "未确定", "confidence": "低", "needs_approval": false, "success": false}
+  },
+  {
+    "id": "high-cpu-is-hypothesis-only",
+    "scenario": "api_slow",
+    "query": "延迟升高是否与 CPU 有关？",
+    "overrides": {
+      "system_metrics": {"cpu_percent": 97, "memory_used_percent": 48},
+      "gpu_metrics": {"gpu_utilization": 10, "memory_used_mb": 1000, "memory_total_mb": 81920},
+      "config_diff": {"changes": []}
+    },
+    "expected": {"root_contains": "CPU 压力", "confidence": "中", "needs_approval": false, "success": false}
+  },
+  {
+    "id": "stopped-container-and-500",
+    "scenario": "api_500",
+    "query": "服务为何不可用？",
+    "overrides": {"docker_list": [{"name": "legal-agent", "status": "exited"}]},
+    "expected": {"root_contains": "容器 legal-agent 当前状态为 exited", "confidence": "高", "needs_approval": true, "success": true}
+  },
+  {
+    "id": "repository-change-needs-runtime-confirmation",
+    "scenario": "api_slow",
+    "query": "最近提交是否导致延迟？",
+    "overrides": {"config_diff": {
+      "path": "reranker/config.yaml",
+      "changes": [{"path": "reranker/config.yaml", "key": "batch_size", "before": 16, "after": 64}],
+      "source": "repository_latest_commit",
+      "runtime_config_verified": false
+    }},
+    "expected": {"root_contains": "未确定", "confidence": "中", "needs_approval": false, "success": false}
+  },
+  {
+    "id": "slow-without-queue-evidence-remains-unknown",
+    "scenario": "api_slow",
+    "query": "接口为何变慢？",
+    "overrides": {"docker_logs": {"lines": ["INFO request completed"]}},
+    "expected": {"root_contains": "未确定", "confidence": "低", "needs_approval": false, "success": false}
+  }
+]

@@ -62,6 +62,8 @@ class LLMSREAgent:
             {"role": "user", "content": self._initial_message(user_query, service, health_url, container, self.allowed_tools)},
         ]
         states = ["START", "UNDERSTAND_INCIDENT", "AGENT_TOOL_SELECTION"]
+        target_url = health_url or f"http://{service}:8000/health"
+        target_container = container or service
 
         for _ in range(self.max_steps):
             try:
@@ -78,6 +80,13 @@ class LLMSREAgent:
                     calls.append(ToolCall(tool_name, arguments, None, error="当前 Agent 任务未获授权调用此工具。"))
                     messages.append({"role": "assistant", "content": json.dumps(instruction, ensure_ascii=False)})
                     messages.append({"role": "user", "content": "工具调用被安全策略拒绝，请选择可用的只读工具。"})
+                    continue
+                if ((tool_name == "service_health" and arguments.get("url") != target_url)
+                        or (tool_name == "docker_logs" and arguments.get("container") != target_container)):
+                    reason = "采集目标与本次诊断指定的服务不一致。"
+                    calls.append(ToolCall(tool_name, arguments, None, error=reason))
+                    messages.append({"role": "assistant", "content": json.dumps(instruction, ensure_ascii=False)})
+                    messages.append({"role": "user", "content": reason + "请使用本次指定的健康检查地址或容器名。"})
                     continue
                 try:
                     result = self.tools.call(tool_name, **arguments)
