@@ -127,6 +127,41 @@ class WebDiagnosisTests(unittest.TestCase):
             finally:
                 jobs.executor.shutdown(wait=True)
 
+    def test_web_model_diagnosis_records_bad_call_and_downgrades_unsupported_cause(self):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+                self.last_usage = None
+
+            def complete(self, _messages):
+                self.calls += 1
+                if self.calls == 1:
+                    return json.dumps({"type": "tool_call", "tool": "system_metrics",
+                                       "arguments": {"unexpected": "value"}})
+                if self.calls == 2:
+                    return json.dumps({"type": "tool_call", "tool": "system_metrics", "arguments": {}})
+                return json.dumps({"type": "final", "diagnosis": {
+                    "evidence_tools": ["system_metrics"], "root_cause": "数据库宕机",
+                    "confidence": "高", "needs_approval": True}})
+
+        with tempfile.TemporaryDirectory() as directory, patch("hermes_sre_agent.web_server.LiveReadOnlyBackend", FakeLiveBackend):
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, client_factory=Client)
+            try:
+                created = jobs.create(project_id, "数据库是否故障", mode="diagnose",
+                                      diagnostic_target=target(strategy="agent"))
+                jobs.futures[created["id"]].result(timeout=3)
+                job = jobs.get(created["id"])
+                self.assertEqual(job["status"], "completed")
+                self.assertEqual([tool["ok"] for tool in job["diagnostic"]["tools"]], [False, True])
+                self.assertIn("# 根因\n\n未确定", job["answer"])
+                self.assertIn("待验证的根因推测：数据库宕机", job["answer"])
+                self.assertIn("**置信度：** 低", job["answer"])
+                self.assertNotIn("等待用户明确批准", job["answer"])
+            finally:
+                jobs.executor.shutdown(wait=True)
+
     def test_review_route_forwards_explicit_target(self):
         handler = object.__new__(HermesRequestHandler)
         handler.server = SimpleNamespace(server_port=8765)
