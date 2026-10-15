@@ -13,7 +13,9 @@ from hermes_sre_agent.code_review import CodeReviewAgent
 from hermes_sre_agent.web_server import ProjectRegistry, ReviewJobs
 
 
-PASS = {"status": "finished", "exit_code": 0, "output": "1 passed"}
+PASS = {"status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]},
+        "covered_changes": {"main.py": [1]}, "test_paths": ["tests/test_main.py"],
+        "summary": "测试通过且执行到业务改动行。"}
 
 
 class ScriptedClient:
@@ -260,7 +262,7 @@ class RepairTests(unittest.TestCase):
                   "            return {'success': False}\n    return {'success': True}\n")
         (self.root / "main.py").write_text(source, encoding="utf-8")
         old = "            return {'success': False}\n    return {'success': True}\n"
-        client = ScriptedClient([
+        client = RecordingClient([
             {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
             {"type": "patch", "changes": [{"path": "main.py", "old_text": old,
                                              "new_text": "    return {'success': False}\nreturn {'success': True}\n"}]},
@@ -274,8 +276,71 @@ class RepairTests(unittest.TestCase):
                                  on_trace=trace.append).run("修正返回格式")
         self.assertIn("候选补丁", result["answer"])
         self.assertIn("'error': 'bad'", (self.root / "main.py").read_text(encoding="utf-8"))
+        retries = [entry for entry in trace if entry["event"] == "patch_retry"]
+        self.assertEqual([entry["details"]["error_code"] for entry in retries], ["invalid_python_syntax"])
+        self.assertEqual(retries[0]["details"]["syntax_kind"], "IndentationError")
+        self.assertIsInstance(retries[0]["details"]["syntax_line"], int)
+        self.assertNotIn("return {'success'", json.dumps(retries, ensure_ascii=False))
+        self.assertIn("IndentationError", client.prompts[-1][-1]["content"])
+        self.assertIn("原前导空格", client.prompts[-1][-1]["content"])
+
+    def test_missing_line_ending_gets_specific_retry_and_preserves_original(self):
+        source = "def value():\n    return 1\n\nx = 2\n"
+        (self.root / "main.py").write_text(source, encoding="utf-8")
+        client = RecordingClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "patch", "changes": [{"path": "main.py", "start_line": 2, "end_line": 2,
+                                             "new_text": "    return 2"}]},
+            {"type": "patch", "changes": [{"path": "main.py", "start_line": 2, "end_line": 2,
+                                             "new_text": "    return 2\n"}]},
+        ])
+        trace = []
+        changes = ChangeSet(self.root)
+        result = CodeReviewAgent(self.root, client, max_tool_calls=1, editor=changes,
+                                 on_trace=trace.append).run("把返回值改为 2")
+        self.assertIn("候选补丁", result["answer"])
+        self.assertEqual((self.root / "main.py").read_text(encoding="utf-8"), source.replace("return 1", "return 2"))
+        self.assertEqual(changes.changes()["main.py"][0], source.encode())
         self.assertEqual([entry["details"]["error_code"] for entry in trace if entry["event"] == "patch_retry"],
-                         ["invalid_python_syntax"])
+                         ["missing_line_ending"])
+        self.assertIn("换行符结束", client.prompts[-1][-1]["content"])
+
+    def test_blank_line_patch_is_blocked_before_testing_or_approval(self):
+        (self.root / "main.py").write_text("def value():\n    return 1\n", encoding="utf-8")
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {"path": "main.py", "old_text": "    return 1\n",
+                                                              "new_text": "    return 1\n\n"}},
+            {"type": "final", "answer": "候选修改已生成"},
+        ])
+        trace = []
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests") as tests:
+            result, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("修复", [])
+        tests.assert_not_called()
+        self.assertIsNone(proposal)
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertIn("没有改变 Python 语法树", result["answer"])
+        self.assertTrue(any(row["event"] == "cosmetic_patch_rejected" for row in trace))
+        self.assertEqual((self.root / "main.py").read_text(encoding="utf-8"), "def value():\n    return 1\n")
+
+    def test_unrelated_passing_test_cannot_authorize_writeback(self):
+        (self.root / "test_harness.py").write_text("def test_unrelated():\n    assert 1 + 1 == 2\n")
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {"path": "main.py", "old_text": "x = 1", "new_text": "x = 2"}},
+            {"type": "final", "answer": "候选修改已生成"},
+        ])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
+                "status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": []}}) as tests:
+            _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修复 x", [])
+        tests.assert_called_once_with(["test_harness.py", "tests/test_main.py"], coverage_targets=["main.py"])
+        self.assertEqual(proposal.validation["failure_kind"], "change_not_covered")
+        self.assertEqual(proposal.validation["exit_code"], 0)
+        self.assertEqual(proposal.validation["defect_reproduction"], "not_run")
+        self.assertFalse(proposal.public()["can_apply"])
+        with self.assertRaises(ValueError):
+            proposal.apply(self.root, self.backups)
+        self.assertEqual((self.root / "main.py").read_text(), "x = 1\n")
 
     def test_patch_phase_can_report_no_evidenced_fix_without_fabricating_changes(self):
         client = ScriptedClient([
@@ -466,7 +531,7 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(jobs.get(job_id)["status"], "completed")
         self.assertEqual((self.root / "main.py").read_text(), "x = 2\n")
 
-    def test_auto_route_pauses_then_resumes_model_after_approval(self):
+    def test_auto_route_uses_verified_records_after_approval(self):
         registry = ProjectRegistry()
         project = registry.add(str(self.root))
         replies = iter([
@@ -494,7 +559,10 @@ class RepairTests(unittest.TestCase):
             if jobs.get(job_id)["status"] == "completed":
                 break
             time.sleep(.01)
-        self.assertIn("最终核对", jobs.get(job_id)["answer"])
+        self.assertIn("测试入口：`tests/test_main.py`", jobs.get(job_id)["answer"])
+        self.assertIn("`main.py` 第 1 行", jobs.get(job_id)["answer"])
+        self.assertIn("原缺陷是否曾被测试复现尚未证实", jobs.get(job_id)["answer"])
+        self.assertNotIn("最终核对", jobs.get(job_id)["answer"])
         self.assertEqual((self.root / "main.py").read_text(), "x = 2\n")
 
     def test_multi_file_failure_rolls_back_completed_writes(self):

@@ -11,7 +11,7 @@ from hermes_sre_agent.repair import ChangeSet, PatchProposal, RepairWorkflow, cr
 from hermes_sre_agent.sandbox import DockerSandbox
 
 
-PASS = {"status": "finished", "exit_code": 0, "output": "1 passed"}
+PASS = {"status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}
 
 
 class Client:
@@ -157,7 +157,7 @@ class FilePermissionTests(unittest.TestCase):
             result, proposal = RepairWorkflow(self.root, client, lambda e: None).run("把 x 改成 2", [])
         self.assertEqual(result["outcome"], "patch_ready")
         self.assertEqual(len(proposal.public()["files"]), 2)
-        run.assert_called_once_with(["tests/test_main.py"])
+        run.assert_called_once_with(["tests/test_main.py"], coverage_targets=["main.py"])
         self.assertFalse((self.root / "tests").exists())
         proposal.apply(self.root, self.backups)
         self.assertTrue((self.root / "tests/test_main.py").exists())

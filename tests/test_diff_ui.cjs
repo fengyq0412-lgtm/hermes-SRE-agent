@@ -10,16 +10,27 @@ const html = fs.readFileSync(path.join(__dirname, '../src/hermes_sre_agent/web_a
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // 简单 DOM 替身只允许文本渲染；任何 innerHTML 写入都会使安全测试失败。
 class Element {
-  constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.text = ''; }
-  set textContent(value) { this.text = String(value); }
+  constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.text = ''; this.className = ''; this.parent = null; }
+  set textContent(value) { this.text = String(value); this.children = []; }
   get textContent() { return this.text + this.children.map(child => child.textContent).join(''); }
   set innerHTML(_value) { throw new Error('禁止将源码作为 HTML 插入'); }
   setAttribute(key, value) { this.attributes[key] = value; }
-  append(...nodes) { this.children.push(...nodes); }
+  append(...nodes) { for (const node of nodes) { node.remove?.();node.parent = this;this.children.push(node); } }
+  replaceChildren(...nodes) { for (const child of this.children)child.parent = null;this.children = [];this.text = '';this.append(...nodes); }
+  remove() { if (!this.parent)return;const index = this.parent.children.indexOf(this);if (index >= 0)this.parent.children.splice(index, 1);this.parent = null; }
+  replaceWith(node) { if (!this.parent)return;const parent = this.parent,index = parent.children.indexOf(this);node.remove?.();parent.children[index] = node;node.parent = parent;this.parent = null; }
+  querySelectorAll(selector) { const found = [];for (const child of this.children) {
+    if (selector.startsWith('.') ? child.className.split(' ').includes(selector.slice(1)) : child.tag === selector)found.push(child);
+    found.push(...child.querySelectorAll(selector));
+  }return found; }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
-const context = vm.createContext({ document: { createElement: tag => new Element(tag) } });
+const context = vm.createContext({ document: { createElement: tag => new Element(tag),
+  createTextNode: value => { const node = new Element('#text');node.textContent = value;return node; } } });
 vm.runInContext(script.slice(script.indexOf('function element('), script.indexOf('async function api(')) +
+                script.slice(script.indexOf('function usageText('), script.indexOf('function statusMeta(')) +
                 script.slice(script.indexOf('function statusMeta('), script.indexOf('function freshChat(')) +
+                script.slice(script.indexOf('function freshChat('), script.indexOf('async function loadConversationList(')) +
                 script.slice(script.indexOf('function parseDiff('), script.indexOf('function renderChat(')), context);
 const parse = text => JSON.parse(JSON.stringify(context.parseDiff(text)));
 const walk = node => [node, ...node.children.flatMap(walk)];
@@ -36,6 +47,15 @@ test('任务状态给出明确下一步，运行中和待审批状态可区分',
   assert.deepEqual(Array.from(context.statusMeta('unknown')), ['正在提交', '正在创建本轮任务。']);
   assert.ok(html.includes('id="jump-latest"'));
   assert.ok(script.includes("aria-live','polite'"));
+});
+
+test('审批与历史方案区分测试通过和改动被验证', () => {
+  assert.ok(script.includes('实际测试入口：'));
+  assert.ok(script.includes('即使测试退出码为 0，也可能未覆盖业务改动'));
+  assert.ok(script.includes('旧版任务即使显示测试通过，也不能据此确认修复有效'));
+  assert.ok(script.includes('历史模型报告（缺少改动覆盖证据，默认折叠）'));
+  assert.ok(script.includes('修复前对照测试未执行；原缺陷是否被复现仍待验证'));
+  assert.ok(script.includes('turn.proposal.can_apply?\'测试已通过且执行到业务改动行'));
 });
 
 test('历史会话使用可删除的列表，输入操作区保持稳定对齐', () => {
@@ -87,6 +107,116 @@ test('网页运行诊断显式收集目标并将观测源留在只读任务', ()
     observability: {kube_context: 'prod', kube_namespace: 'hermes', kube_selector: 'app=hermes-web'}});
   assert.ok(script.includes("mode=isDiagnosis?'diagnose'"));
   assert.ok(script.includes('diagnostic_target:target'));
+});
+
+test('后台任务不锁定历史查看，但其他会话保持只读', () => {
+  const current = {busy: true, active: {conversation_id: 'running'}, conversationId: 'older',
+    conversations: [{id: 'running', status: 'running'}]};
+  assert.equal(context.projectLocked(current), true);
+  assert.equal(context.historyReadOnly(current), true);
+  current.conversationId = 'running';
+  assert.equal(context.historyReadOnly(current), false);
+  current.active = null;current.conversations[0].status = 'awaiting_review';
+  assert.equal(context.historyReadOnly(current), false);
+  current.conversationId = 'older';
+  assert.equal(context.historyReadOnly(current), true);
+  assert.ok(script.includes('const locked=c.loading;const readOnly=projectLocked(c)'));
+  assert.ok(script.includes('select.disabled=locked'));
+  assert.ok(script.includes('remove.disabled=locked||readOnly'));
+});
+
+test('轮询仅更新活动任务节点，保留已展开的详情节点', () => {
+  const oldDetail = {className: '', textContent: '查看沙箱测试输出\n结果', open: true,
+    querySelector: () => ({textContent: '查看沙箱测试输出'})};
+  const nextDetail = {className: '', textContent: oldDetail.textContent, open: false,
+    querySelector: () => ({textContent: '查看沙箱测试输出'}), replaceWith(node) { this.replacement = node; }};
+  context.preserveDetails({querySelectorAll: () => [oldDetail]}, {querySelectorAll: () => [nextDetail]});
+  assert.strictEqual(nextDetail.replacement, oldDetail);
+
+  const title = {textContent: ''}, description = {textContent: ''};
+  const status = {className: '', querySelector: selector => selector === 'strong' ? title : description};
+  const progress = {textContent: ''}, usage = {hidden: true, textContent: ''}, totalUsage = {textContent: ''};
+  const box = {querySelector: selector => ({'.task-state': status, '.live-progress': progress,
+    '.live-usage': usage})[selector] || null};
+  const c = {conversationId: 'running'};
+  context.state = {selected: {id: 'project'}, renderedTurns: new Map([['job', {box}]]), usage: null};
+  context.chat = () => c;
+  context.$ = () => totalUsage;
+  context.renderChat = () => { throw new Error('轮询不应重建整段对话'); };
+  context.refreshVisibleTask('project', {id: 'job', conversation_id: 'running', status: 'running',
+    events: [{message: '正在采集'}], usage: {requests: 0}});
+  assert.strictEqual(context.state.renderedTurns.get('job').box, box);
+  assert.equal(title.textContent, '正在分析');
+  assert.equal(description.textContent, '正在采集');
+  assert.equal(progress.textContent, '正在采集');
+  assert.ok(script.includes('if(active){c.active=visible||turn;if(visible)refreshVisibleTask'));
+});
+
+test('运行结果更新后，其他消息和测试输出详情节点保持原样', () => {
+  vm.runInContext(script.slice(script.indexOf('function renderChat('), script.indexOf('function fileLabel(')), context);
+  const ids = new Map();const get = id => {if (!ids.has(id))ids.set(id, new Element('div'));return ids.get(id);};
+  context.$ = get;context.document.querySelector = () => get('footnote');
+  context.renderConversationList = () => {};
+  context.renderMarkdown = (node, text) => { node.textContent = text; };
+  context.requestAnimationFrame = () => {};
+  context.updateJumpLatest = () => {};
+  const turn = {id: 'job', projectId: 'project', conversation_id: 'conv', question: '检查服务',
+    status: 'running', mode: 'review', events: [{message: '读取证据'}], trace: [],
+    steps: [{tool: 'run_tests', result: {output: 'PASS'}}]};
+  const c = {turns: [turn], conversationId: 'conv', conversations: [{id: 'conv', status: 'running'}],
+    busy: true, hydrated: true, loading: false};
+  context.chat = () => c;
+  context.state = {selected: {id: 'project', name: 'Hermes'}, chats: new Map([['project', c]]),
+    renderedKey: null, renderedTurns: new Map(), usage: null, approvalDismissed: new Set(), approvalTurnId: null};
+  get('task-mode').value = 'code';get('approval-dialog').open = false;
+  context.renderChat();
+  const first = context.state.renderedTurns.get('job');
+  const output = first.box.querySelectorAll('details').find(detail =>
+    detail.querySelector('summary')?.textContent === '查看沙箱测试输出');
+  assert.ok(output);output.open = true;
+  const trace = first.box.querySelector('.live-trace');trace.open = true;
+  turn.events.push({message: '继续分析'});
+  turn.trace.push({seq: 1, summary: '读取指标', time: 'now', stage: '取证', event: 'result'});
+  context.refreshVisibleTask('project', turn);
+  assert.strictEqual(context.state.renderedTurns.get('job').box, first.box);
+  assert.strictEqual(first.box.querySelector('.live-trace'), trace);
+  assert.equal(trace.open, true);
+  assert.equal(trace.querySelector('.trace-list').children.length, 1);
+  turn.status = 'completed';turn.answer = '已完成';c.busy = false;c.conversations[0].status = 'completed';
+  context.renderChat();
+  const next = context.state.renderedTurns.get('job');
+  assert.strictEqual(next.user, first.user);
+  assert.strictEqual(next.box.querySelectorAll('details').find(detail =>
+    detail.querySelector('summary')?.textContent === '查看沙箱测试输出'), output);
+  assert.equal(output.open, true);
+});
+
+test('查看其他历史会话时后台轮询继续，且不会覆盖当前会话父节点', async () => {
+  vm.runInContext(script.slice(script.indexOf('async function monitor('), script.indexOf("$('chat-form').onsubmit")), context);
+  const active = {id: 'job', conversation_id: 'active', projectId: 'project', status: 'running'};
+  const c = {turns: [{id: 'older-job', status: 'completed'}], active, busy: true,
+    conversationId: 'older', parent: 'older-job', conversations: [
+      {id: 'active', status: 'running'}, {id: 'older', status: 'completed'}]};
+  const scheduled = [];let polls = 0;
+  context.state = {selected: {id: 'project'}, pollingJobs: new Set(), cancelledJobs: new Set(), usage: null};
+  context.chat = () => c;
+  context.api = async () => ({id: 'job', conversation_id: 'active', status: ++polls === 1 ? 'running' : 'completed',
+    answer: '已完成', session_usage: null});
+  context.setTimeout = callback => scheduled.push(callback);
+  context.refreshVisibleTask = () => { throw new Error('不应更新正在查看的其他会话'); };
+  context.renderChat = () => {};
+  context.loadConversationList = async () => {};
+
+  await context.monitor('project', active);
+  assert.equal(scheduled.length, 1);
+  assert.equal(c.conversations[0].status, 'running');
+  await scheduled.shift()();
+  assert.equal(c.active, null);
+  assert.equal(c.busy, false);
+  assert.equal(c.parent, 'older-job');
+  assert.equal(c.turns[0].id, 'older-job');
+  assert.equal(c.conversations[0].status, 'completed');
+  assert.equal(context.state.pollingJobs.size, 0);
 });
 
 test('多块修改的原行号、新行号和增删统计正确', () => {

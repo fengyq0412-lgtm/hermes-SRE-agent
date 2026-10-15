@@ -77,6 +77,20 @@ class SandboxTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("HERMES_SANDBOX_INTEGRATION") == "1", "需要显式开启真实 Docker 测试")
 class DockerIntegrationTests(unittest.TestCase):
+    def test_real_runner_reports_only_executed_business_lines(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            (project / "main.py").write_text("def value():\n    return 2\n")
+            (project / "test_unrelated.py").write_text("def test_unrelated():\n    assert 1 + 1 == 2\n")
+            (project / "test_related.py").write_text("from main import value\ndef test_related():\n    assert value() == 2\n")
+            unrelated = DockerSandbox(root).run_tests("test_unrelated.py", coverage_targets=["main.py"])
+            self.assertEqual(unrelated["exit_code"], 0, unrelated)
+            self.assertEqual(unrelated["coverage"], {"main.py": []})
+            related = DockerSandbox(root).run_tests("test_related.py", coverage_targets=["main.py"])
+            self.assertEqual(related["exit_code"], 0, related)
+            self.assertIn(2, related["coverage"]["main.py"])
+            self.assertNotIn("HERMES_COVERAGE_JSON", related["output"])
+
     def test_multiple_targets_and_all_skipped_cannot_mask_failure(self):
         with tempfile.TemporaryDirectory() as root:
             (Path(root) / "test_first.py").write_text("def test_first():\n    assert 2 > 1\n")

@@ -1,6 +1,7 @@
 """一次性 Docker 测试沙箱：只接受项目相对测试路径，不接受 Shell。"""
 
 import ast
+import json
 import os
 import re
 import selectors
@@ -14,6 +15,7 @@ from uuid import uuid4
 
 IMAGE = "hermes-sandbox:local"
 OUTPUT_LIMIT = 32_000
+COVERAGE_MARKER = "HERMES_COVERAGE_JSON="
 
 
 class SandboxCancelled(Exception):
@@ -89,13 +91,19 @@ class DockerSandbox:
                 os.close(fd)
         return len(catalog["files"])
 
-    def run_tests(self, path="tests"):
+    def run_tests(self, path="tests", coverage_targets=None):
         if self.cancel_event and self.cancel_event.is_set():
             raise SandboxCancelled
         paths = path if isinstance(path, list) else [path]
         if not 1 <= len(paths) <= 50 or any(not isinstance(p, str) or not p or p.startswith("-")
                 or Path(p).is_absolute() or ".." in Path(p).parts for p in paths):
             raise ValueError("测试路径必须是项目内的相对路径。")
+        targets = sorted(set(coverage_targets or []))
+        from .code_review import SourceTools
+        if len(targets) > 5 or any(not isinstance(name, str) or Path(name).suffix != ".py"
+                or Path(name).is_absolute() or ".." in Path(name).parts
+                or not SourceTools.allowed(Path(name)) for name in targets):
+            raise ValueError("覆盖目标必须是项目内至多 5 个 Python 源码文件。")
         name = "hermes-test-" + uuid4().hex
         with tempfile.TemporaryDirectory(prefix="hermes-sandbox-") as directory:
             count = self.snapshot(directory)
@@ -109,6 +117,7 @@ class DockerSandbox:
                        "--pids-limit", "64", "--log-driver", "none",
                        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
                        "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+                       "--env", "HERMES_COVERAGE_TARGETS=" + json.dumps(targets),
                        "--env", "HOME=/tmp", "--mount", f"type=bind,src={directory},dst=/source,readonly",
                        self.image, *paths]
             created_ok = False
@@ -119,7 +128,7 @@ class DockerSandbox:
                 created_ok = True
                 if self.cancel_event and self.cancel_event.is_set():
                     raise SandboxCancelled
-                result = self._execute(name, count)
+                result = self._execute(name, count, targets)
                 result["image"] = self.image
                 return result
             except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -134,7 +143,7 @@ class DockerSandbox:
                     if created_ok:
                         raise ValueError(f"沙箱清理失败，请检查容器 {name}。")
 
-    def _execute(self, name, count):
+    def _execute(self, name, count, targets):
         process = subprocess.Popen(["docker", "start", "-a", name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output = bytearray()
         status = "finished"
@@ -160,8 +169,22 @@ class DockerSandbox:
                         break
             if status == "finished":
                 process.wait(timeout=max(.1, deadline - time.monotonic()))
+            rendered = output.decode("utf-8", errors="replace")
+            coverage = None
+            if status == "finished" and COVERAGE_MARKER in rendered:
+                prefix, marker = rendered.rsplit(COVERAGE_MARKER, 1)
+                line, _, suffix = marker.partition("\n")
+                try:
+                    parsed = json.loads(line)
+                    if isinstance(parsed, dict) and set(parsed) == set(targets) and all(
+                            isinstance(lines, list) and all(type(number) is int and number > 0 for number in lines)
+                            for lines in parsed.values()):
+                        coverage = parsed
+                        rendered = prefix + suffix
+                except json.JSONDecodeError:
+                    pass
             return {"status": status, "exit_code": process.returncode if status == "finished" else None,
-                    "output": output.decode("utf-8", errors="replace"), "snapshot_files": count,
+                    "output": rendered, "coverage": coverage, "snapshot_files": count,
                     "scope": "过滤后的临时副本；无网络；未安装项目额外依赖"}
         finally:
             if process.poll() is None:

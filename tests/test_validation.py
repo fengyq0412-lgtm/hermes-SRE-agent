@@ -11,7 +11,9 @@ from hermes_sre_agent.repair import ChangeSet, RepairWorkflow
 from hermes_sre_agent.code_review import CodeReviewAgent, patch_history
 from hermes_sre_agent.sandbox import DockerSandbox
 from hermes_sre_agent.model_client import ModelRequestError
-from hermes_sre_agent.test_validation import import_isolation_plan, source_contracts, validation_details
+from hermes_sre_agent.test_validation import (change_coverage_details, changed_executable_lines,
+                                              cosmetic_changes, import_isolation_plan, source_contracts,
+                                              validation_details)
 
 
 class Client:
@@ -53,7 +55,7 @@ class ValidationTests(unittest.TestCase):
         trace = []
         with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", side_effect=[
                 {"status": "finished", "exit_code": 1, "output": "assert 2 == 1"},
-                {"status": "finished", "exit_code": 0, "output": "1 passed"}]) as run:
+                {"status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}]) as run:
             result, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("将 value 改成 2", [])
         self.assertEqual(run.call_count, 2)
         self.assertTrue(proposal.public()["can_apply"])
@@ -85,7 +87,7 @@ class ValidationTests(unittest.TestCase):
         ])
         trace = []
         with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
-                "status": "finished", "exit_code": 0, "output": "1 passed"}) as run:
+                "status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}) as run:
             _, proposal = RepairWorkflow(self.root, client, lambda e: None, trace.append).run("将 value 改成2", [])
         self.assertTrue(proposal.public()["can_apply"])
         self.assertIn("tests/test_main.py", proposal.changes)
@@ -153,12 +155,35 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(details["failure_kind"], "dependency_missing")
         self.assertIn("fastapi", details["summary"])
 
+    def test_semantic_diff_and_executed_line_are_separate_checks(self):
+        before = b"def value():\n    return 1\n"
+        cosmetic = b"def value():\n    return 1\n\n"
+        changed = b"def value():\n    return 2\n"
+        self.assertEqual(cosmetic_changes({"main.py": (before, cosmetic)}), ["main.py"])
+        self.assertEqual(cosmetic_changes({"main.py": (before, changed)}), [])
+        self.assertEqual(changed_executable_lines(before, changed), [2])
+        result = {"status": "finished", "exit_code": 0, "failure_kind": "passed", "coverage": {"main.py": [1]}}
+        change_coverage_details(result, {"main.py": (before, changed)})
+        self.assertEqual(result["failure_kind"], "change_not_covered")
+        self.assertEqual(result["uncovered_changes"], {"main.py": [2]})
+        result["coverage"] = {"main.py": [1, 2]}
+        result["failure_kind"] = "passed"
+        change_coverage_details(result, {"main.py": (before, changed)})
+        self.assertEqual(result["failure_kind"], "passed")
+        self.assertEqual(result["covered_changes"], {"main.py": [2]})
+
+    def test_missing_coverage_is_not_reported_as_verified(self):
+        result = {"status": "finished", "exit_code": 0, "failure_kind": "passed"}
+        change_coverage_details(result, {"main.py": (b"x = 1\n", b"x = 2\n")})
+        self.assertEqual(result["failure_kind"], "coverage_unavailable")
+        self.assertIn("未提供改动行覆盖记录", result["summary"])
+
     def test_direct_test_patch_needs_no_final_model_call(self):
         client = Client(self.replies()[:2] + [{"type": "final", "answer": "业务完成"},
             {"type": "patch", "changes": [{"path": "tests/test_main.py", "content":
                 "from main import value\ndef test_value():\n    assert value == 2\n"}]}])
         with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
-                "status": "finished", "exit_code": 0, "output": "1 passed"}):
+                "status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}):
             _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
         self.assertTrue(proposal.public()["can_apply"])
         self.assertEqual(len(client.prompts), 4)
@@ -169,7 +194,7 @@ class ValidationTests(unittest.TestCase):
             {"type": "patch", "changes": [{"path": "tests/test_main.py", "old_text": "", "new_text":
                 "from main import value\ndef test_value():\n    assert value == 2\n"}]}])
         with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", return_value={
-                "status": "finished", "exit_code": 0, "output": "1 passed"}) as run:
+                "status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}) as run:
             _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 value", [])
         run.assert_called_once()
         self.assertTrue(proposal.public()["can_apply"])
@@ -295,7 +320,7 @@ class ValidationTests(unittest.TestCase):
             {"type": "patch", "changes": [{"path": "tests/test_main.py", "old_text": "value == 1", "new_text": "value == 2"}]}])
         with patch("hermes_sre_agent.repair.DockerSandbox.run_tests", side_effect=[
                 {"status": "finished", "exit_code": 1, "output": "assert 2 == 1"},
-                {"status": "finished", "exit_code": 0, "output": "1 passed"}]):
+                {"status": "finished", "exit_code": 0, "output": "1 passed", "coverage": {"main.py": [1]}}]):
             _, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改", [])
         self.assertTrue(proposal.public()["can_apply"])
         self.assertEqual(proposal.changes["main.py"][1], b"value = 2\n")

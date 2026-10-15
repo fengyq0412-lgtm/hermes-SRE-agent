@@ -14,7 +14,8 @@ from uuid import uuid4
 from .code_review import CodeReviewAgent, SourceTools
 from .sandbox import DockerSandbox
 from .model_client import ModelRequestError
-from .test_validation import TEST_RULES, import_isolation_plan, source_contracts, validation_details
+from .test_validation import (TEST_RULES, change_coverage_details, cosmetic_changes,
+                              import_isolation_plan, production_changes, source_contracts, validation_details)
 
 
 def open_parent(root, name, created_dirs=None):
@@ -96,14 +97,26 @@ def editable_path(path):
     return relative
 
 
+class InvalidPythonSource(ValueError):
+    """保留不含候选源码的语法位置，供补丁重试精准纠错。"""
+
+    def __init__(self, path, cause):
+        self.syntax_line = getattr(cause, "lineno", None)
+        self.syntax_offset = getattr(cause, "offset", None)
+        self.syntax_kind = type(cause).__name__
+        location = f"第 {self.syntax_line} 行" if self.syntax_line else "文件内容"
+        detail = getattr(cause, "msg", "")
+        detail = detail.replace("\n", " ")[:120] if isinstance(detail, str) else ""
+        reason = f"{self.syntax_kind}: {detail}" if detail else self.syntax_kind
+        super().__init__(f"Python 语法无效（{path}，{location}，{reason}）；请检查缩进并重新提交补丁。")
+
+
 def validate_python_source(path, content):
     """在候选补丁进入审核前检查完整 Python 文件，不执行其中的代码。"""
     try:
         ast.parse(content.decode("utf-8-sig"), filename=path)
     except (SyntaxError, UnicodeError) as exc:
-        line = getattr(exc, "lineno", None)
-        location = f"第 {line} 行" if line else "文件内容"
-        raise ValueError(f"Python 语法无效（{path}，{location}）；请检查缩进并重新提交补丁。") from exc
+        raise InvalidPythonSource(path, exc) from exc
 
 
 class ChangeSet:
@@ -315,6 +328,8 @@ class PatchProposal:
             if before is not None and not isinstance(before, bytes) or not isinstance(after, bytes) or not after.strip():
                 raise ValueError("方案只能包含创建或修改，不能删除或清空文件。")
             validate_python_source(name, after)
+        if baseline is not None and cosmetic_changes(changes):
+            raise ValueError("候选业务修改仅改变空白或注释，不能作为修复方案审批。")
         self.id = uuid4().hex
         self.changes = changes
         self.validation = validation
@@ -329,8 +344,13 @@ class PatchProposal:
             files.append({"path": name, "diff": diff, "operation": "create" if before is None else "modify",
                           "is_test": is_test_file(name) or "tests" in Path(name).parts or Path(name).name == "conftest.py",
                           "base_sha256": hashlib.sha256(before).hexdigest() if before is not None else None})
+        failure_kind = self.validation.get("failure_kind", validation_details(self.validation)["failure_kind"])
+        covered = self.validation.get("covered_changes")
+        coverage_ok = (self.baseline is None or not production_changes(self.changes) or
+                       isinstance(covered, dict) and all(covered.get(path) for path in production_changes(self.changes)))
         return {"id": self.id, "files": files, "validation": self.validation,
-                "can_apply": self.state == "pending" and self.validation.get("status") == "finished" and self.validation.get("exit_code") == 0,
+                "can_apply": self.state == "pending" and self.validation.get("status") == "finished"
+                and self.validation.get("exit_code") == 0 and failure_kind == "passed" and coverage_ok,
                 "state": self.state}
 
     def apply(self, root, backup_root):
@@ -392,6 +412,10 @@ class PatchProposal:
                         raise ValueError(f"{name} 在应用前发生变化，请重新生成。")
                     replace_at(fd, basename, after, mode)
                 applied.append(name)
+            for name in applied:
+                fd, basename, _ = handles[name]
+                if read_at(fd, basename)[0] != self.changes[name][1]:
+                    raise ValueError(f"{name} 写回后内容与已验证补丁不一致，不能报告完成。")
             manifest["state"] = "applied"
             (backup / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
             self.state = "applied"
@@ -654,6 +678,13 @@ class RepairWorkflow:
                 if result.get("outcome") not in {"blocked", "needs_input"}:
                     result = agent._blocked_repair(result["steps"], "执行结束但没有检测到文件净变更。")
                 return result, None
+            cosmetic = cosmetic_changes(patch)
+            if cosmetic:
+                reason = "候选业务修改没有改变 Python 语法树，仅空白或注释变化，不能证明已修复问题：" + "、".join(cosmetic)
+                self.on_trace({"stage": "修改", "event": "cosmetic_patch_rejected",
+                               "summary": "未形成可验证的业务修复，原项目未修改", "details": {"files": cosmetic}})
+                return {"outcome": "blocked", "steps": result["steps"], "summary": reason,
+                        "answer": "## 修改任务未完成\n" + reason + "。未启动沙箱，也未进入人工审批；请提交实际业务逻辑改动。"}, None
             paths = DockerSandbox(workspace).discover_tests(test_path)
             test_report = None
             if not paths:
@@ -679,17 +710,22 @@ class RepairWorkflow:
                         validation = {"status": "not_run", "exit_code": None,
                                       "output": "本阶段尚未实际生成可收集的回归测试，未启动 Docker 容器；原项目未修改。"}
                     else:
-                        validation = dict(DockerSandbox(workspace, cancel_event=self.cancel_event).run_tests(paths))
+                        validation = dict(DockerSandbox(workspace, cancel_event=self.cancel_event).run_tests(
+                            paths, coverage_targets=list(production_changes(changes.changes()))))
                 except (ValueError, OSError) as exc:
                     validation = {"status": "unavailable", "exit_code": None, "output": str(exc)}
                 validation.update(test_paths=list(paths), attempt=attempt + 1, **validation_details(validation))
+                validation["defect_reproduction"] = "not_run"
+                change_coverage_details(validation, changes.changes())
                 if test_report and test_report.get("outcome") in {"interrupted", "blocked", "needs_input"} and validation["failure_kind"] != "passed":
                     validation["test_agent"] = test_report
                 result["steps"].append({"tool": "run_tests", "arguments": {"path": list(paths)}, "result": validation})
                 self.on_trace({"stage": "验证", "event": "test_result", "summary": "沙箱验证结束",
                                "details": {key: validation.get(key) for key in
-                                           ("status", "exit_code", "failure_kind", "missing_modules", "attempt")}})
-                if (validation["failure_kind"] == "passed" or validation["status"] != "finished"
+                                           ("status", "exit_code", "failure_kind", "missing_modules", "attempt",
+                                            "covered_changes", "uncovered_changes")}})
+                if (validation["failure_kind"] in {"passed", "coverage_unavailable", "change_not_covered"}
+                        or validation["status"] != "finished"
                         or validation["exit_code"] not in {1, 2, 5} or attempt == 2):
                     break
                 writable = {name for name in changes.changes() if is_test_file(name) or "tests" in Path(name).parts
@@ -712,5 +748,5 @@ class RepairWorkflow:
             patch = changes.changes()
             self.on_event({"message": "修复编排 · 等待人工审核 diff 与测试结果", "kind": "stage"})
             self.on_trace({"stage": "审批", "event": "approval_requested", "summary": "等待人工审核补丁与测试结果",
-                           "details": {"file_count": len(patch), "can_apply": validation.get("status") == "finished" and validation.get("exit_code") == 0}})
+                           "details": {"file_count": len(patch), "can_apply": validation.get("failure_kind") == "passed"}})
             return result, PatchProposal(patch, validation, baseline)

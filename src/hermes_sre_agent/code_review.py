@@ -484,6 +484,8 @@ class CodeReviewAgent:
             return "invalid_patch_schema"
         if "Python 语法无效" in message:
             return "invalid_python_syntax"
+        if "替换非文件末尾行时，new_text 必须以换行符结束" in message:
+            return "missing_line_ending"
         if "新建协议错误" in message:
             return "missing_create_content"
         if "新建目标已存在" in message:
@@ -510,6 +512,7 @@ class CodeReviewAgent:
             "unread_target": "模型试图修改尚未读取的源码文件。",
             "invalid_patch_schema": "模型补丁字段不符合协议，请区分新建 content 与修改 new_text。",
             "invalid_python_syntax": "候选 Python 文件存在语法或缩进错误；请保留所属代码块的缩进并提交可解析的完整修改。",
+            "missing_line_ending": "行号替换缺少末尾换行符；new_text 必须以 \\n 结束，避免与下一行拼接。",
             "missing_create_content": "新文件使用了修改协议；应提交完整 content，无需读取不存在的文件。",
             "create_target_exists": "新建目标已存在，禁止覆盖已有文件。",
             "unread_line_range": "模型指定的行号不在已读取的源码范围内。",
@@ -552,6 +555,8 @@ class CodeReviewAgent:
             "\"start_line\":10,\"end_line\":12,\"new_text\":\"替换这几整行后的完整代码\\n\"}],"
             "\"answer\":\"修改依据与剩余风险\"}。行号必须落在下方已读取片段中；"
             "new_text 替换起止行的全部内容，若后面还有代码，末尾要带换行符。"
+            "复制原行的前导空格：修改函数、循环或条件内部代码时，每一行仍需保持所属代码块的缩进；"
+            "如果只改一行，优先使用包含原缩进的 old_text/new_text 精确替换。"
             "也可用 old_text、new_text 做精确文本替换，但 old_text 必须在当前文件中唯一命中，"
             "不能包含展示用行号。最多12处、5个 Python 文件（含测试）；"
             "修改已有文件须先读取；新建文件无需读取不存在的路径，使用 changes 中的 {path,content}，content 是完整源码，"
@@ -635,6 +640,11 @@ class CodeReviewAgent:
                 code = self._patch_error_code(exc, instruction, finish_reason)
                 last_error = code
                 details = {"attempt": attempt, "error_code": code, "reply_chars": len(reply)}
+                if code == "invalid_python_syntax":
+                    for field in ("syntax_line", "syntax_offset", "syntax_kind"):
+                        value = getattr(exc, field, None)
+                        if value is not None:
+                            details[field] = value
                 raw_edits = instruction.get("changes") if isinstance(instruction, dict) else None
                 if isinstance(raw_edits, list):
                     # 仅记录协议字段是否存在，不记录源码、路径或模型自由文本。
@@ -645,9 +655,14 @@ class CodeReviewAgent:
                     details["finish_reason"] = finish_reason
                 self.on_trace({"stage": "修改", "event": "patch_retry", "summary": self._patch_error_hint(code),
                                "details": details})
+                correction = ("候选完整文件未通过 Python 解析。请按报错行检查 new_text 的每一行缩进；"
+                              "单行修改优先用保留原前导空格的 old_text/new_text，不要移动相邻代码块。"
+                              if code == "invalid_python_syntax" else
+                              "行号替换的 new_text 必须以换行符结束，不要与原文件下一行拼接。"
+                              if code == "missing_line_ending" else "")
                 writer.extend([{"role": "assistant", "content": reply},
                                {"role": "user", "content": "补丁未生效，请纠正：" + str(exc)[:300] +
-                                '。新建文件无需先读，使用 {"type":"patch","changes":[{"path":"tests/test_name.py","content":"完整源码"}]}；'
+                                "。" + correction + '新建文件无需先读，使用 {"type":"patch","changes":[{"path":"tests/test_name.py","content":"完整源码"}]}；'
                                 "已有文件 old_text 无法精确命中时，改用已读取行号的 start_line/end_line/new_text；"
                                 "一次只提交最小的一处修改。确实无法修复则说明原因。"}])
         reason = "补丁阶段三次提交均未通过；最后一次失败：" + self._patch_error_hint(last_error or "invalid_patch")

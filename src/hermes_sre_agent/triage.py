@@ -52,8 +52,10 @@ class TriageAgent:
         performance = self._performance(observed, calls)
         changes = self._changes(observed, calls)
         assessments = [availability, performance, changes]
+        platform_candidates = []
         if any(name in observed for name in ("kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules")):
             assessments.append(self._observability(observed, calls))
+            platform_candidates = self._platform_candidates(observed, availability, performance)
 
         # 变更角色没有确认到批大小线索时，协调器不把原始 Git 输出交给根因规则。
         config = observed["config_diff"] if changes["signal"] in {"batch_change", "repository_candidate"} \
@@ -64,9 +66,23 @@ class TriageAgent:
             config, target_container,
         )
         diagnosis.evidence.extend(f"{call.tool} 采集失败：{call.error}" for call in calls if call.error)
+        if platform_candidates:
+            diagnosis.evidence.extend(f"平台候选线索（{item['source']}）：{item['summary']}；"
+                                      f"同现证据：{', '.join(item['coobserved_with']) or '暂无'}"
+                                      for item in platform_candidates)
+            if diagnosis.root_cause.startswith("未确定"):
+                diagnosis.hypothesis += " 平台候选线索：" + "；".join(item["summary"] for item in platform_candidates) + "。"
+                diagnosis.verification += " 需核对同一服务、实例和时间窗口；副本不足或抓取失败不能单独证明根因。"
+            assessments.append({"role": "平台候选", "signal": "coobserved" if any(
+                item["coobserved_with"] for item in platform_candidates) else "unverified",
+                "summary": "；".join(item["summary"] for item in platform_candidates),
+                "evidence_tools": sorted({item["source"] for item in platform_candidates}),
+                "candidates": platform_candidates})
 
         if availability["signal"] in {"container_stopped", "http_5xx", "http_4xx"}:
-            decision = "优先处理可用性证据"
+            decision = "优先处理可用性证据，并核对平台候选线索" if platform_candidates else "优先处理可用性证据"
+        elif platform_candidates:
+            decision = "将平台异常作为候选线索，与服务健康、容器和日志交叉核对"
         elif performance["signal"] == "gpu_pressure" and changes["signal"] in {"batch_change", "repository_candidate"}:
             decision = "交叉核对性能与配置变更"
         else:
@@ -150,12 +166,13 @@ class TriageAgent:
         workloads = kube.get("workloads", []) if isinstance(kube, dict) else []
         targets = prom.get("targets", []) if isinstance(prom, dict) else []
         rules = grafana.get("rules", []) if isinstance(grafana, dict) else []
-        unready = [item for item in workloads if item.get("kind") == "Deployment"
-                   and isinstance(item.get("replicas"), int)
-                   and (item.get("ready_replicas") or 0) < item["replicas"]]
-        unhealthy_pods = [item for item in workloads if item.get("kind") == "Pod"
+        workloads = workloads if isinstance(workloads, list) else []
+        targets = targets if isinstance(targets, list) else []
+        rules = rules if isinstance(rules, list) else []
+        unready = cls._unready_deployments(workloads)
+        unhealthy_pods = [item for item in workloads if isinstance(item, dict) and item.get("kind") == "Pod"
                           and item.get("phase") in {"Pending", "Failed", "Unknown"}]
-        failed = [item for item in targets if item.get("up") is False]
+        failed = [item for item in targets if isinstance(item, dict) and item.get("up") is False]
         if unready or unhealthy_pods or failed:
             signal, summary = "degraded", (f"发现 {len(unready)} 个副本不足的 Deployment、"
                                             f"{len(unhealthy_pods)} 个状态异常的 Pod、{len(failed)} 个抓取失败目标；"
@@ -167,3 +184,47 @@ class TriageAgent:
         names = {"kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules"}
         return {"role": "平台观测", "signal": signal, "summary": summary,
                 "evidence_tools": cls._evidence(calls, names)}
+
+    @staticmethod
+    def _unready_deployments(workloads):
+        return [item for item in workloads if isinstance(item, dict) and item.get("kind") == "Deployment"
+                and type(item.get("replicas")) is int and item["replicas"] > 0
+                and (item.get("ready_replicas") is None or type(item.get("ready_replicas")) is int)
+                and (item.get("ready_replicas") or 0) < item["replicas"]]
+
+    @classmethod
+    def _platform_candidates(cls, observed, availability, performance):
+        """平台异常只提供可追溯的候选线索，不直接改变根因或置信度。"""
+        kube = observed.get("kubernetes_workloads")
+        prom = observed.get("prometheus_scrape")
+        workloads = kube.get("workloads", []) if isinstance(kube, dict) else []
+        targets = prom.get("targets", []) if isinstance(prom, dict) else []
+        coobserved = []
+        if availability["signal"] in {"container_stopped", "http_5xx", "http_4xx"}:
+            coobserved.append("service_health")
+            if availability["signal"] == "container_stopped":
+                coobserved.append("docker_list")
+        performance_tools = {"gpu_pressure": ("service_health", "gpu_metrics", "docker_logs"),
+                             "cpu_pressure": ("service_health", "system_metrics"),
+                             "memory_pressure": ("service_health", "system_metrics"),
+                             "slow_unknown": ("service_health",)}
+        coobserved.extend(name for name in performance_tools.get(performance["signal"], ())
+                          if name not in coobserved)
+        candidates = []
+        if isinstance(workloads, list):
+            unready = cls._unready_deployments(workloads)
+            abnormal_pods = [item for item in workloads if isinstance(item, dict) and item.get("kind") == "Pod"
+                             and item.get("phase") in {"Pending", "Failed", "Unknown"}]
+            if unready or abnormal_pods:
+                candidates.append({"source": "kubernetes_workloads", "signal": "workload_degraded",
+                                   "summary": f"Kubernetes 有 {len(unready)} 个副本不足的 Deployment、"
+                                              f"{len(abnormal_pods)} 个状态异常的 Pod",
+                                   "coobserved_with": coobserved[:]})
+        if isinstance(targets, list):
+            failed = [item for item in targets if isinstance(item, dict) and item.get("up") is False]
+            if failed:
+                candidates.append({"source": "prometheus_scrape", "signal": "scrape_failed",
+                                   "summary": f"Prometheus 有 {len(failed)} 个 up=false 的抓取目标；"
+                                              "可能是抓取链路或目标异常",
+                                   "coobserved_with": coobserved[:]})
+        return candidates

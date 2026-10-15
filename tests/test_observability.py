@@ -111,6 +111,61 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(platform["signal"], "degraded")
         self.assertEqual(platform["evidence_tools"], ["kubernetes_workloads"])
 
+    def test_platform_anomalies_become_candidates_without_becoming_root_cause(self):
+        class Backend:
+            available_tools = ["service_health", "docker_list", "system_metrics", "gpu_metrics",
+                               "docker_logs", "git_recent_changes", "config_diff",
+                               "kubernetes_workloads", "prometheus_scrape", "grafana_alert_rules"]
+
+            def read(self, tool, **_arguments):
+                data = {
+                    "service_health": {"status_code": 503, "latency_ms": 50},
+                    "docker_list": [{"name": "hermes-web", "status": "running"}],
+                    "system_metrics": {"cpu_percent": 20}, "gpu_metrics": {},
+                    "docker_logs": {"lines": ["request failed"]},
+                    "git_recent_changes": {"summary": "none"}, "config_diff": {"changes": []},
+                    "kubernetes_workloads": {"workloads": [
+                        {"kind": "Deployment", "name": "hermes-web", "replicas": 2, "ready_replicas": 1}]},
+                    "prometheus_scrape": {"targets": [{"instance": "hermes-web", "up": False}]},
+                    "grafana_alert_rules": {"rules": [{"uid": "latency", "title": "Latency"}]},
+                }
+                return data[tool]
+
+        run = TriageAgent(Backend()).investigate("服务为什么不可用", service="hermes-web", container="hermes-web")
+
+        self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))
+        self.assertEqual(run.diagnosis.confidence, "低")
+        self.assertFalse(run.diagnosis.needs_approval)
+        self.assertIn("Kubernetes 有 1 个副本不足", run.diagnosis.hypothesis)
+        self.assertIn("Prometheus 有 1 个 up=false", run.diagnosis.hypothesis)
+        self.assertIn("不能单独证明根因", run.diagnosis.verification)
+        candidate = next(item for item in run.assessments if item["role"] == "平台候选")
+        self.assertEqual(candidate["signal"], "coobserved")
+        self.assertEqual([item["source"] for item in candidate["candidates"]],
+                         ["kubernetes_workloads", "prometheus_scrape"])
+        self.assertEqual(candidate["candidates"][0]["coobserved_with"], ["service_health"])
+        self.assertNotIn("grafana_alert_rules", candidate["evidence_tools"])
+
+    def test_prometheus_scrape_failure_alone_is_not_service_failure(self):
+        class Backend:
+            available_tools = ["service_health", "docker_list", "system_metrics", "gpu_metrics",
+                               "docker_logs", "git_recent_changes", "config_diff", "prometheus_scrape"]
+
+            def read(self, tool, **_arguments):
+                data = {"service_health": {"status_code": 200, "latency_ms": 20},
+                        "docker_list": [{"name": "hermes-web", "status": "running"}],
+                        "system_metrics": {}, "gpu_metrics": {}, "docker_logs": {"lines": []},
+                        "git_recent_changes": {}, "config_diff": {"changes": []},
+                        "prometheus_scrape": {"targets": [{"instance": "hermes-web", "up": False}]}}
+                return data[tool]
+
+        run = TriageAgent(Backend()).investigate("检查抓取", service="hermes-web", container="hermes-web")
+
+        self.assertTrue(run.diagnosis.root_cause.startswith("未确定"))
+        candidate = next(item for item in run.assessments if item["role"] == "平台候选")
+        self.assertEqual(candidate["signal"], "unverified")
+        self.assertEqual(candidate["candidates"][0]["coobserved_with"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

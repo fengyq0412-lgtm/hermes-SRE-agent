@@ -78,6 +78,8 @@ class WebDiagnosisTests(unittest.TestCase):
                 self.assertEqual(job["status"], "completed")
                 self.assertEqual(job["mode"], "diagnose")
                 self.assertIn("平台观测", job["answer"])
+                self.assertIn("平台候选", job["answer"])
+                self.assertTrue(any(item["role"] == "平台候选" for item in job["diagnostic"]["assessments"]))
                 self.assertIn("运行诊断仅提供只读证据", job["answer"])
                 self.assertNotIn("等待用户明确批准", job["answer"])
                 self.assertEqual(len(job["diagnostic"]["tools"]), 10)

@@ -162,3 +162,72 @@ def validation_details(result):
         "tests_not_generated": "尚未生成测试文件，本次未启动 Docker 容器；已有业务补丁仍需验证。",
     }.get(kind, "沙箱未完成有效验证，请查看执行输出。")
     return {"failure_kind": kind, "missing_modules": missing, "summary": summary}
+
+
+def production_changes(changes):
+    """只返回业务源码变更；测试和 fixture 不可替代业务修复证据。"""
+    return {path: pair for path, pair in changes.items()
+            if "tests" not in Path(path).parts and Path(path).name != "conftest.py"
+            and not Path(path).name.startswith("test_") and not path.endswith("_test.py")}
+
+
+def cosmetic_changes(changes):
+    """AST 完全相同时，空行、注释等不能被当作行为修复。"""
+    cosmetic = []
+    for path, (before, after) in production_changes(changes).items():
+        if before is None:
+            continue
+        try:
+            if ast.dump(ast.parse(before), include_attributes=False) == ast.dump(
+                    ast.parse(after), include_attributes=False):
+                cosmetic.append(path)
+        except (SyntaxError, UnicodeError):
+            pass
+    return cosmetic
+
+
+def changed_executable_lines(before, after):
+    """按补丁后行号定位改动的语法节点，不把空白行算作覆盖。"""
+    old_lines = (before or b"").decode("utf-8-sig").splitlines()
+    new_lines = after.decode("utf-8-sig").splitlines()
+    changed = set()
+    for tag, _, _, start, end in difflib.SequenceMatcher(None, old_lines, new_lines).get_opcodes():
+        if tag == "equal":
+            continue
+        changed.update(range(start + 1, end + 1))
+        if tag == "delete" and new_lines:
+            changed.add(min(start + 1, len(new_lines)))
+    tree = ast.parse(after)
+    executable = {node.lineno for node in ast.walk(tree) if hasattr(node, "lineno")}
+    return sorted(changed & executable)
+
+
+def change_coverage_details(result, changes):
+    """测试通过不代表修复被验证；每个业务文件至少执行一行改动。"""
+    targets = production_changes(changes)
+    if not targets or result.get("failure_kind") != "passed":
+        return result
+    coverage = result.get("coverage")
+    if not isinstance(coverage, dict):
+        result.update(failure_kind="coverage_unavailable",
+                      summary="测试退出码为 0，但沙箱未提供改动行覆盖记录，不能确认修复有效。")
+        return result
+    covered, uncovered = {}, {}
+    for path, (before, after) in targets.items():
+        changed = changed_executable_lines(before, after)
+        executed = coverage.get(path)
+        numbers = {number for number in executed if type(number) is int and number > 0} if isinstance(executed, list) else set()
+        matched = sorted(set(changed) & numbers)
+        if matched:
+            covered[path] = matched
+        else:
+            uncovered[path] = changed
+    result["covered_changes"] = covered
+    result["uncovered_changes"] = uncovered
+    if uncovered:
+        result.update(failure_kind="change_not_covered",
+                      summary="测试退出码为 0，但未执行到这些业务文件的改动行：" + "、".join(sorted(uncovered)) +
+                              "。不能据此确认问题已修复，也不能批准写回。")
+    else:
+        result["summary"] = "测试通过且执行到每个业务文件的改动行；这不等于证明所有行为或接口均正确。"
+    return result

@@ -564,7 +564,7 @@ class ReviewJobs:
                 job.update(status="running", backup_path=backup)
                 continue_work = True
             job["proposal"] = proposal.public()
-            job["events"].append({"message": "人工审核 · " + ("已批准并写回，正在继续核对" if decision == "approve" else "已拒绝，原项目未修改"), "kind": "approval"})
+            job["events"].append({"message": "人工审核 · " + ("已批准并写回，正在汇总验证记录" if decision == "approve" else "已拒绝，原项目未修改"), "kind": "approval"})
         if continue_work:
             self._trace(job_id, {"stage": "审批", "event": "approved", "summary": "人工批准，补丁已写回原项目",
                                  "details": {"file_count": len(proposal.changes)}})
@@ -639,34 +639,32 @@ class ReviewJobs:
     def _continue_after_approval(self, job_id):
         if self.cancel_events[job_id].is_set():
             return
-        with self.lock:
-            job = self.jobs[job_id]
-            project = self.registry.resolve(job["project_id"])
-            files = [entry["path"] for entry in job["proposal"]["files"]]
-            old_answer = job["answer"]
-            original_question = job["question"]
-            previous_history = copy.deepcopy(job.get("history", []))
-            prior_turns = [{"id": j["id"], "question": j["question"], "answer": j.get("answer", ""), "status": j["status"]}
-                           for j in self.jobs.values() if j.get("conversation_id") == job.get("conversation_id")]
         try:
-            client = MeteredClient(self.client_factory(), lambda usage: self._record_usage(job_id, usage),
-                                   self.cancel_events[job_id])
-            question = ("用户已人工批准并写回这些文件：" + "、".join(files) +
-                        "。请读取实际项目中的修改并给出最终中文结果，说明修改效果、沙箱测试范围与残余风险。"
-                        "不要继续修改文件，也不要声称执行了新的测试。")
-            history = [*previous_history, {"role": "user", "content": original_question},
-                       {"role": "assistant", "content": old_answer[:8000]}]
-            result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e),
-                                     max_tool_calls=4, on_trace=lambda e: self._worker_trace(job_id, e),
-                                     history_search=lambda text: self.context_memory.search(prior_turns, text),
-                                     cancel_event=self.cancel_events[job_id]).run(question, history)
             with self.lock:
                 self._check_cancelled(job_id)
                 job = self.jobs[job_id]
-                job.update(status="completed", answer=result["answer"],
-                           steps=job["steps"] + result["steps"])
-            self._worker_trace(job_id, {"stage": "完成", "event": "completed", "summary": "写回后核对完成",
-                                 "details": {"tool_calls": len(result["steps"])}})
+                proposal = job["proposal"]
+                validation = proposal["validation"]
+                files = [entry["path"] for entry in proposal["files"]]
+                paths = validation.get("test_paths") or []
+                covered = validation.get("covered_changes") or {}
+                coverage_lines = "、".join(f"`{path}` 第 {','.join(map(str, lines))} 行"
+                                          for path, lines in sorted(covered.items())) or "未记录"
+                answer = ("## 已执行的操作\n"
+                          "用户已批准，补丁已写回且逐文件核对内容一致：" + "、".join(f"`{path}`" for path in files) + "。\n\n"
+                          "## 沙箱验证记录\n"
+                          "测试入口：" + ("、".join(f"`{path}`" for path in paths) if paths else "无") + "；"
+                          f"状态：{validation.get('status')}；退出码：{validation.get('exit_code')}。\n"
+                          "业务改动行实际执行记录：" + coverage_lines + "。\n"
+                          "验证结论：" + str(validation.get("summary") or "未提供验证摘要。") + "\n\n"
+                          "## 尚不能据此确认\n"
+                          "修复前对照测试：未执行，原缺陷是否曾被测试复现尚未证实。\n"
+                          "测试通过及改动行被执行，不等于原缺陷已被复现、所有接口都被测试或所有业务行为正确。"
+                          "未在测试入口和覆盖记录中出现的范围均视为未验证；具体改动以页面差异为准。")
+                job.update(status="completed", answer=answer)
+            self._worker_trace(job_id, {"stage": "完成", "event": "completed", "summary": "根据写回及测试记录生成事实汇总",
+                                 "details": {"file_count": len(files), "test_paths": paths,
+                                             "covered_files": sorted(covered)}})
         except TaskCancelled:
             return
         except Exception:
@@ -743,9 +741,13 @@ class ReviewJobs:
                     self._check_cancelled(job_id)
                     if proposal:
                         self.proposals[job_id] = proposal
+                    answer = ("## 候选修改待审核\n已生成临时补丁，原项目尚未修改。"
+                              "下面的代码差异是实际改动，测试入口、输出和覆盖情况以沙箱验证记录为准。"
+                              "模型关于根因或修复效果的文字判断不作为测试通过的证据。"
+                              if proposal else result["answer"])
                     self.jobs[job_id].update(status="awaiting_review" if proposal else
                                              ("needs_input" if result.get("outcome") == "needs_input" else "blocked"),
-                                             answer=result["answer"], steps=result["steps"],
+                                             answer=answer, steps=result["steps"],
                                              questions=result.get("questions", []),
                                              proposal=proposal.public() if proposal else None)
                     self._persist(job_id)
@@ -760,7 +762,11 @@ class ReviewJobs:
                                      history_search=history_search,
                                      cancel_event=self.cancel_events[job_id]).run(question, history)
             blocked = result.get("outcome") == "blocked"
-            self._update(job_id, status="blocked" if blocked else "completed", answer=result["answer"], steps=result["steps"])
+            answer = result["answer"] if blocked else (
+                "## 证据状态\n以下是模型根据已读取代码提出的候选问题，不等于已复现或修复。"
+                "只有实际执行的测试入口和输出能证明对应测试结果；未测试的行为均标为待验证。\n\n" +
+                result["answer"].replace("已确认问题", "候选问题（待验证）"))
+            self._update(job_id, status="blocked" if blocked else "completed", answer=answer, steps=result["steps"])
             self._worker_trace(job_id, {"stage": "停止" if blocked else "完成", "event": "blocked" if blocked else "completed",
                                  "summary": "审查已安全停止，保留已有证据" if blocked else "审查任务完成",
                                  "details": {"tool_calls": len(result["steps"])}})
