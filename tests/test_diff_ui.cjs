@@ -125,6 +125,38 @@ test('后台任务不锁定历史查看，但其他会话保持只读', () => {
   assert.ok(script.includes('remove.disabled=locked||readOnly'));
 });
 
+test('历史列表内容未变时保留按钮节点，运行中仍可切换查看', () => {
+  vm.runInContext(script.slice(script.indexOf('function renderConversationList()'), script.indexOf('async function deleteConversation(')), context);
+  const list = new Element('div');
+  const c = {busy: true, loading: false, active: {conversation_id: 'running'}, conversationId: 'older',
+    conversations: [{id: 'running', title: '运行中', turn_count: 1, status: 'running'},
+      {id: 'older', title: '旧会话', turn_count: 2, status: 'completed'}]};
+  context.state = {selected: {id: 'project'}, renderedHistoryKey: null};
+  context.chat = () => c;
+  context.$ = () => list;
+  context.renderConversationList();
+  const firstRow = list.children[0], select = list.children[1].children[0];
+  assert.equal(select.disabled, false);
+  assert.equal(list.children[1].children[1].disabled, true);
+  context.renderConversationList();
+  assert.strictEqual(list.children[0], firstRow);
+  c.conversations[0].status = 'completed';c.busy = false;
+  context.renderConversationList();
+  assert.notStrictEqual(list.children[0], firstRow);
+});
+
+test('发送前明确区分多语言审查和仅 Python 可修改范围', () => {
+  assert.ok(html.includes('id="code-scope"'));
+  assert.ok(html.includes('可审查多种语言'));
+  assert.ok(html.includes('目前只能为项目内 Python 源码和测试生成修改补丁'));
+  const ids = new Map();const get = id => {if (!ids.has(id))ids.set(id, new Element('div'));return ids.get(id);};
+  context.$ = get;
+  context.setTaskMode('diagnose');
+  assert.equal(get('code-scope').hidden, true);
+  context.setTaskMode('code');
+  assert.equal(get('code-scope').hidden, false);
+});
+
 test('轮询仅更新活动任务节点，保留已展开的详情节点', () => {
   const oldDetail = {className: '', textContent: '查看沙箱测试输出\n结果', open: true,
     querySelector: () => ({textContent: '查看沙箱测试输出'})};
@@ -163,7 +195,9 @@ test('运行结果更新后，其他消息和测试输出详情节点保持原�
   const turn = {id: 'job', projectId: 'project', conversation_id: 'conv', question: '检查服务',
     status: 'running', mode: 'review', events: [{message: '读取证据'}], trace: [],
     steps: [{tool: 'run_tests', result: {output: 'PASS'}}]};
-  const c = {turns: [turn], conversationId: 'conv', conversations: [{id: 'conv', status: 'running'}],
+  const older = {id: 'older', projectId: 'project', conversation_id: 'conv', question: '上一次审查',
+    status: 'completed', mode: 'review', answer: '旧结论', events: [], trace: []};
+  const c = {turns: [older, turn], conversationId: 'conv', conversations: [{id: 'conv', status: 'running'}],
     busy: true, hydrated: true, loading: false};
   context.chat = () => c;
   context.state = {selected: {id: 'project', name: 'Hermes'}, chats: new Map([['project', c]]),
@@ -171,6 +205,7 @@ test('运行结果更新后，其他消息和测试输出详情节点保持原�
   get('task-mode').value = 'code';get('approval-dialog').open = false;
   context.renderChat();
   const first = context.state.renderedTurns.get('job');
+  const olderBox = context.state.renderedTurns.get('older').box;
   const output = first.box.querySelectorAll('details').find(detail =>
     detail.querySelector('summary')?.textContent === '查看沙箱测试输出');
   assert.ok(output);output.open = true;
@@ -182,9 +217,14 @@ test('运行结果更新后，其他消息和测试输出详情节点保持原�
   assert.strictEqual(first.box.querySelector('.live-trace'), trace);
   assert.equal(trace.open, true);
   assert.equal(trace.querySelector('.trace-list').children.length, 1);
+  turn.pollError = '暂时无法读取任务状态';
+  context.refreshVisibleTask('project', turn);
+  assert.strictEqual(context.state.renderedTurns.get('job').box, first.box);
+  assert.equal(first.box.querySelector('.live-poll-error').textContent, turn.pollError);
   turn.status = 'completed';turn.answer = '已完成';c.busy = false;c.conversations[0].status = 'completed';
   context.renderChat();
   const next = context.state.renderedTurns.get('job');
+  assert.strictEqual(context.state.renderedTurns.get('older').box, olderBox);
   assert.strictEqual(next.user, first.user);
   assert.strictEqual(next.box.querySelectorAll('details').find(detail =>
     detail.querySelector('summary')?.textContent === '查看沙箱测试输出'), output);
@@ -217,6 +257,23 @@ test('查看其他历史会话时后台轮询继续，且不会覆盖当前会�
   assert.equal(c.turns[0].id, 'older-job');
   assert.equal(c.conversations[0].status, 'completed');
   assert.equal(context.state.pollingJobs.size, 0);
+});
+
+test('轮询暂时失败时只更新当前任务错误，不重建对话', async () => {
+  vm.runInContext(script.slice(script.indexOf('async function monitor('), script.indexOf("$('chat-form').onsubmit")), context);
+  const turn = {id: 'job', conversation_id: 'active', projectId: 'project', status: 'running'};
+  const c = {turns: [turn], active: turn, busy: true, conversationId: 'active', conversations: []};
+  const scheduled = [];let refreshed = 0;
+  context.state = {selected: {id: 'project'}, pollingJobs: new Set(), cancelledJobs: new Set()};
+  context.chat = () => c;
+  context.api = async () => { throw new Error('网络断开'); };
+  context.setTimeout = callback => scheduled.push(callback);
+  context.refreshVisibleTask = () => { refreshed++; };
+  context.renderChat = () => { throw new Error('轮询失败不应重建对话'); };
+  await context.monitor('project', turn);
+  assert.equal(refreshed, 1);
+  assert.match(turn.pollError, /网络断开/);
+  assert.equal(scheduled.length, 1);
 });
 
 test('多块修改的原行号、新行号和增删统计正确', () => {

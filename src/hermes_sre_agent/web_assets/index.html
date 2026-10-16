@@ -26,6 +26,7 @@ details{border-left:2px solid #dde6e2;padding-left:13px;margin:16px 0;font-size:
 .trace-list{list-style:none;padding:0;margin:12px 0;display:grid;gap:10px}.trace-item{border:1px solid #e0e9e5;background:#f8fbf9;border-radius:8px;padding:10px 12px;color:#314b43}.trace-head{font-weight:600}.trace-meta{display:block;color:#71857b;font-size:.75rem;margin:3px 0}.trace-detail{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#536a60;font-size:.74rem}.trace-path{overflow-wrap:anywhere;color:#61786c;font-size:.75rem}
 .composer-wrap{padding:12px 32px 19px;background:linear-gradient(transparent,#fafbfc 14%);flex-shrink:0}.composer{max-width:848px;margin:auto;background:white;border:1px solid #cfd9dd;border-radius:14px;box-shadow:0 5px 22px #233a4a07;padding:15px 16px 11px}.composer textarea{display:block;width:100%;min-height:56px;max-height:160px;border:0;outline:none;resize:vertical;color:#23313b;line-height:1.7;background:transparent}.composer textarea:focus-visible{outline:2px solid #3caa8b;outline-offset:5px;border-radius:5px}.composer-footer{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:8px}.composer-footer span{font-size:.75rem;color:var(--muted);line-height:1.5;min-width:0}.send{border:0;background:#173b32;color:white;border-radius:8px;padding:8px 16px;font-size:.875rem;white-space:nowrap;justify-self:end}.send:hover:not(:disabled){background:#0e3028}.footnote{text-align:center;font-size:.75rem;color:#88969e;margin-top:9px}.notice{font-size:.875rem;color:#934c22;margin:12px 0}.hidden,[hidden]{display:none!important}
 .task-mode-row{display:flex;align-items:center;gap:9px;margin-bottom:10px;color:#526660;font-size:.78rem}.task-mode-row select,.diagnostic-settings input,.diagnostic-settings select{min-width:0;border:1px solid #cfd9dd;background:#fff;border-radius:7px;padding:7px 9px;color:#23313b;font-size:.8rem}.diagnostic-settings{max-height:min(36dvh,330px);overflow:auto;border:1px solid #dce7e2;background:#f8fbf9;border-radius:9px;padding:11px;margin-bottom:12px}.diagnostic-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.diagnostic-settings label{display:grid;gap:4px;color:#526660;font-size:.75rem}.diagnostic-settings input,.diagnostic-settings select{width:100%}.diagnostic-settings details{margin:10px 0 0;padding:0;border:0}.diagnostic-settings details summary{font-size:.78rem;color:#315e50}.diagnostic-settings .diagnostic-hint{margin:9px 0 0;color:#657872;font-size:.73rem;line-height:1.5}
+.code-scope{margin:0 0 11px;padding:8px 10px;border-radius:7px;background:#f3f7f5;color:#526660;font-size:.75rem;line-height:1.55}
 dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;padding:25px;color:#23313b;box-shadow:0 30px 100px #183b3c30}dialog::backdrop{background:#172c3b55;backdrop-filter:blur(3px)}.dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}.dialog-head h2{font-size:1.125rem;margin:0}.path-row{display:flex;gap:8px}.path-row input{flex:1;min-width:0;border:1px solid #d2dce0;border-radius:7px;padding:9px 10px;font-size:.8rem}.folder-list{height:280px;overflow:auto;margin:14px 0;border:1px solid var(--line);border-radius:8px}.folder{display:block;background:white;border:0;border-bottom:1px solid #f0f3f5;padding:12px 15px;width:100%;text-align:left;font-size:.875rem;color:#36505b}.folder:hover{background:#eef5f2}.folder::before{content:"▱";color:#529478;font-size:1.1rem;margin-right:12px}.dialog-bottom{display:flex;justify-content:space-between;align-items:center;gap:12px}.dialog-bottom small{font-size:.75rem;color:var(--muted)}.empty-list{padding:24px;color:var(--muted);font-size:.875rem}
 @media(max-width:760px){.app{grid-template-columns:190px minmax(0,1fr)}.sidebar{padding:20px 10px}.topbar{padding:0 18px}.conversation{padding:20px}.welcome{padding-top:40px}h1{font-size:1.5rem}.suggestions{grid-template-columns:1fr}.composer-wrap{padding:12px 16px}.footnote{line-height:1.6}}
 @media(max-width:520px){.app{display:flex;flex-direction:column;height:100dvh}.sidebar{padding:12px;flex-direction:row;align-items:center;gap:10px;border-bottom:1px solid var(--line)}.brand{padding:0;font-size:0}.sidebar-bottom,.caption{display:none}.project-section{flex:1;min-width:0}.projects,.history-list{display:flex;max-height:68px}.project-row{min-width:168px;grid-template-columns:minmax(0,1fr) 28px}.project{min-width:0}.project-remove{font-size:.9rem}.history-row{min-width:160px;grid-template-columns:minmax(0,1fr) 28px}.history-delete{font-size:.9rem}.open-button{font-size:.8rem;padding:8px}.topbar{height:62px}main{height:auto;flex:1;min-height:0}.welcome{padding-top:16px}.welcome .mark{display:none}.dialog-bottom{align-items:flex-end}.composer-footer span{max-width:65%;line-height:1.6}.top-actions{gap:7px}.session-usage{max-width:85px;white-space:normal;line-height:1.2}}
@@ -52,7 +53,7 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
    <div class="diagnostic-grid"><label>服务名<input id="diagnostic-service" placeholder="如 hermes-web" autocomplete="off"></label><label>Docker 容器名<input id="diagnostic-container" placeholder="实际容器名" autocomplete="off"></label><label>健康检查地址<input id="diagnostic-health" placeholder="http://127.0.0.1:8765/health" autocomplete="off"></label><label>诊断方式<select id="diagnostic-strategy"><option value="triage">规则分诊（无需模型）</option><option value="agent">模型辅助（使用 .env 配置）</option></select></label></div>
    <details><summary>可选：Kubernetes / Prometheus / Grafana</summary><div class="diagnostic-grid"><label>Kubernetes context<input id="diagnostic-kube-context" autocomplete="off"></label><label>namespace<input id="diagnostic-kube-namespace" autocomplete="off"></label><label>label selector<input id="diagnostic-kube-selector" placeholder="app=hermes-web" autocomplete="off"></label><label>Prometheus 根地址<input id="diagnostic-prometheus-url" placeholder="https://prometheus.example.com" autocomplete="off"></label><label>Prometheus job<input id="diagnostic-prometheus-job" autocomplete="off"></label><label>Grafana 根地址<input id="diagnostic-grafana-url" placeholder="https://grafana.example.com" autocomplete="off"></label><label>Grafana 令牌环境变量名<input id="diagnostic-grafana-token-env" placeholder="HERMES_GRAFANA_TOKEN" autocomplete="off"></label></div></details>
    <p class="diagnostic-hint">目标必须明确填写；所选项目仅用于 Git 变更线索。规则分诊不调用模型，模型辅助会把采集证据发送到配置的模型服务。结果保存在本机会话；本入口不会重启服务或修改配置。</p>
-  </div><label for="question" class="hidden">问题</label><textarea id="question" placeholder="例如：帮我检查登录逻辑有哪些 bug…" aria-label="问题"></textarea><div class="composer-footer"><span id="composer-note">先打开一个项目</span><button class="send" id="send" disabled>发送 ↑</button></div><div id="notice" class="notice" role="alert" hidden></div></form><div class="footnote">点击发送后，相关代码片段会发送至你在 .env 中配置的模型服务；实际写回仍需你批准。</div></div>
+  </div><p class="code-scope" id="code-scope">能力范围：可审查多种语言；目前只能为项目内 Python 源码和测试生成修改补丁。JavaScript、TypeScript 等非 Python 文件可审查，但暂不能自动修改。所有补丁须通过验证并经你批准后才会写回。</p><label for="question" class="hidden">问题</label><textarea id="question" placeholder="例如：帮我检查登录逻辑有哪些 bug…" aria-label="问题"></textarea><div class="composer-footer"><span id="composer-note">先打开一个项目</span><button class="send" id="send" disabled>发送 ↑</button></div><div id="notice" class="notice" role="alert" hidden></div></form><div class="footnote">点击发送后，相关代码片段会发送至你在 .env 中配置的模型服务；实际写回仍需你批准。</div></div>
  </main>
 </div>
 <dialog id="picker" aria-labelledby="picker-title"><div class="dialog-head"><h2 id="picker-title">打开本机项目</h2><button class="text-button" id="close-picker" aria-label="关闭选择器">✕</button></div>
@@ -65,7 +66,7 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
 'use strict';
 const $ = id => document.getElementById(id);
 const token = document.querySelector('meta[name="hermes-token"]').content;
-const state = {projects:[], selected:null, chats:new Map(), directory:null, pollingJobs:new Set(), cancelledJobs:new Set(), usage:null, approvalDismissed:new Set(), approvalTurnId:null, renderedKey:null, renderedTurns:new Map()};
+const state = {projects:[], selected:null, chats:new Map(), directory:null, pollingJobs:new Set(), cancelledJobs:new Set(), usage:null, approvalDismissed:new Set(), approvalTurnId:null, renderedKey:null, renderedHistoryKey:null, renderedTurns:new Map()};
 function element(tag, cls, text) { const e=document.createElement(tag); if(cls)e.className=cls; if(text!==undefined)e.textContent=text; return e; }
 async function api(path, body, method=body===undefined?'GET':'POST') {
  const r=await fetch(path,{method,headers:{'X-Hermes-Token':token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
@@ -141,7 +142,11 @@ async function removeProject(project) {
  }catch(error){notice('移除项目失败：'+error.message);}
 }
 function renderConversationList() {
- const list=$('conversations');list.replaceChildren();const c=chat();
+ const list=$('conversations'),c=chat();
+ const key=JSON.stringify([state.selected?.id,c.conversationId,c.loading,projectLocked(c),
+  c.conversations.map(item=>[item.id,item.title,item.turn_count,item.status])]);
+ if(state.renderedHistoryKey===key)return;
+ state.renderedHistoryKey=key;list.replaceChildren();
  if(!state.selected){list.append(element('div','history-empty','选择项目后可查看历史会话。'));return;}
  if(!c.conversations.length){list.append(element('div','history-empty','还没有历史会话。'));return;}
  const locked=c.loading;const readOnly=projectLocked(c);
@@ -228,7 +233,7 @@ const diagnosticInputs={service:'diagnostic-service',container:'diagnostic-conta
  kube_context:'diagnostic-kube-context',kube_namespace:'diagnostic-kube-namespace',kube_selector:'diagnostic-kube-selector',
  prometheus_url:'diagnostic-prometheus-url',prometheus_job:'diagnostic-prometheus-job',
  grafana_url:'diagnostic-grafana-url',grafana_token_env:'diagnostic-grafana-token-env'};
-function setTaskMode(mode){$('task-mode').value=mode;$('diagnostic-settings').hidden=mode!=='diagnose';
+function setTaskMode(mode){$('task-mode').value=mode;$('diagnostic-settings').hidden=mode!=='diagnose';$('code-scope').hidden=mode==='diagnose';
  $('question').placeholder=mode==='diagnose'?'例如：这个服务为什么变慢了？':'例如：帮我检查登录逻辑有哪些 bug…';}
 function diagnosticTarget(){const values={};for(const [key,id] of Object.entries(diagnosticInputs))values[key]=$(id).value.trim();
  return {service:values.service,container:values.container,health_url:values.health_url,
@@ -241,7 +246,8 @@ function turnSignature(turn,c,isLast){return JSON.stringify([turn.question,turn.
  turn.answer,turn.error,turn.message,turn.events,turn.trace,turn.trace_path,turn.trace_error,turn.context,
  turn.persistence_error,turn.pollError,turn.usage,turn.diagnostic,turn.steps,turn.proposal,turn.backup_path,
  turn.cancelBusy,turn.cancelError,turn.undoBusy,turn.undoError,turn.approvalBusy,turn.approvalError,
- isLast,c.busy,c.hydrated,projectLocked(c)]);}
+ isLast,isLast&&turn.status==='interrupted'?c.hydrated:null,
+ turn.proposal?.state==='applied'&&['completed','interrupted'].includes(turn.status)?projectLocked(c):null]);}
 function preserveDetails(oldBox,newBox){
  const oldDetails=[...oldBox.querySelectorAll('details')],used=new Set();
  for(const detail of [...newBox.querySelectorAll('details')]){
@@ -274,6 +280,7 @@ function refreshVisibleTask(projectId,turn){
  if(status){const [title,fallback]=statusMeta(turn.status);status.className='task-state '+(turn.status||'queued');status.querySelector('strong').textContent=title;status.querySelector('small').textContent=turn.events?.at(-1)?.message||fallback;}
  const progress=box.querySelector('.live-progress');if(progress)progress.textContent=turn.events?.at(-1)?.message||'正在连接模型…';
  const usage=box.querySelector('.live-usage');if(usage){usage.hidden=!turn.usage?.requests;usage.textContent=usageText(turn.usage,'本次审查');}
+ const error=box.querySelector('.live-poll-error');if(error){error.hidden=!turn.pollError;error.textContent=turn.pollError||'';}
  syncLiveEvidence(box,turn);$('session-usage').textContent=sessionUsageText(state.usage);
 }
 function renderChat() {
@@ -306,7 +313,7 @@ function renderChat() {
   }
   if(turn.cancelError)box.append(element('p','error',turn.cancelError));
   if(turn.persistence_error)box.append(element('p','error',turn.persistence_error));
-  if(turn.pollError)box.append(element('p','notice',turn.pollError));
+  {const pollError=element('p','notice live-poll-error',turn.pollError||'');pollError.hidden=!turn.pollError;box.append(pollError);}
   if(turn.context){const context=turn.context;const detail=element('details');detail.open=!!turn.contextOpen;detail.ontoggle=()=>{turn.contextOpen=detail.open;};
    detail.append(element('summary','','本轮上下文 · 最近 '+context.recent_turns+' 轮 · 已压缩 '+context.compressed_turns+' 轮'));
    detail.append(element('p','','带入 '+context.history_chars+' / '+context.max_chars+' 字符，历史证据索引 '+context.evidence_count+' 条。字符预算不是 token 计费。'));
@@ -452,7 +459,7 @@ async function monitor(projectId, turn) {
    }
    state.usage=job.session_usage;c.busy=active;
    const entry=c.conversations.find(item=>item.id===job.conversation_id);if(entry)entry.status=job.status;
-   if(active){c.active=visible||turn;if(visible)refreshVisibleTask(projectId,visible);setTimeout(poll,1200);return;}
+   if(active){c.active=visible||turn;if(visible)refreshVisibleTask(projectId,visible);if(state.selected?.id===projectId)renderConversationList();setTimeout(poll,1200);return;}
    if(c.active?.id===job.id)c.active=null;
    if(c.conversationId===job.conversation_id)c.parent=job.id;
    state.pollingJobs.delete(turn.id);
@@ -461,7 +468,7 @@ async function monitor(projectId, turn) {
   }catch(e){if(turn.cancelled||state.cancelledJobs.has(turn.id)){state.pollingJobs.delete(turn.id);state.cancelledJobs.delete(turn.id);return;}
    turn.pollError='暂时无法读取任务状态：'+e.message+'。正在重试，服务重启后请刷新页面。';
    const visible=c.turns.find(item=>item.id===turn.id);if(visible)visible.pollError=turn.pollError;
-   c.busy=true;if(visible&&state.selected?.id===projectId)renderChat();setTimeout(poll,3000);}
+   c.busy=true;if(visible)refreshVisibleTask(projectId,visible);setTimeout(poll,3000);}
  }
  return poll();
 }
