@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from .code_review import CodeReviewAgent, SourceTools
+from .code_review import CodeReviewAgent, EDITABLE_SUFFIXES, SourceTools, UnsupportedEditLanguage
 from .sandbox import DockerSandbox
 from .model_client import ModelRequestError
 from .test_validation import (TEST_RULES, change_coverage_details, cosmetic_changes,
@@ -91,9 +91,11 @@ def editable_path(path):
     if not isinstance(path, str):
         raise ValueError("文件路径必须是字符串。")
     relative = Path(path)
-    if (relative.is_absolute() or ".." in relative.parts or relative.suffix != ".py"
+    if (relative.is_absolute() or ".." in relative.parts
             or not SourceTools.allowed(relative) or relative.as_posix() != path):
-        raise ValueError("仅允许项目内规范相对路径的 Python 文件，不能访问隐藏文件、密钥或越界路径。")
+        raise ValueError("仅允许项目内规范相对路径，不能访问隐藏文件、密钥或越界路径。")
+    if relative.suffix not in EDITABLE_SUFFIXES:
+        raise UnsupportedEditLanguage(relative.suffix)
     return relative
 
 
@@ -672,6 +674,11 @@ class RepairWorkflow:
             agent = CodeReviewAgent(workspace, self.client, self.on_event, editor=changes, on_trace=self.on_trace,
                                     history_search=self.history_search, cancel_event=self.cancel_event)
             result = agent.run(question, history)
+            if result.get("scope_blocked"):
+                self.on_trace({"stage": "停止", "event": "unsupported_edit_language",
+                               "summary": "目标文件没有完整修改验证适配，原项目未修改",
+                               "details": {"error_kind": result.get("error_kind")}})
+                return result, None
             patch = changes.changes()
             if not patch:
                 self.on_trace({"stage": "修复", "event": "no_patch", "summary": "未生成可审核的补丁，原项目未修改", "details": {}})

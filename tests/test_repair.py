@@ -411,6 +411,43 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "blocked")
         self.assertIn("不支持删除文件", result["answer"])
 
+    def test_non_python_edit_stops_before_tests_even_after_partial_python_patch(self):
+        (self.root / "app.js").write_text("const value = 1;\n", encoding="utf-8")
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "main.py", "old_text": "x = 1", "new_text": "x = 2"}},
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "app.js"}},
+            {"type": "tool_call", "tool": "edit_file", "arguments": {
+                "path": "app.js", "old_text": "value = 1", "new_text": "value = 2"}},
+        ])
+        with patch("hermes_sre_agent.repair.DockerSandbox.run_tests") as tests:
+            result, proposal = RepairWorkflow(self.root, client, lambda e: None).run("修改 Python 和 JS", [])
+        self.assertIsNone(proposal)
+        self.assertEqual(result["error_kind"], "unsupported_edit_language")
+        self.assertIn("本轮未完成全部目标", result["answer"])
+        self.assertEqual(client.calls, 4)
+        self.assertEqual((self.root / "main.py").read_text(), "x = 1\n")
+        self.assertEqual((self.root / "app.js").read_text(), "const value = 1;\n")
+        tests.assert_not_called()
+
+    def test_patch_phase_unsupported_language_does_not_retry_or_approve(self):
+        (self.root / "app.js").write_text("const value = 1;\n", encoding="utf-8")
+        client = ScriptedClient([
+            {"type": "tool_call", "tool": "read_file", "arguments": {"path": "app.js"}},
+            {"type": "patch", "changes": [{"path": "app.js", "old_text": "value = 1", "new_text": "value = 2"}]},
+        ])
+        result = CodeReviewAgent(self.root, client, max_tool_calls=1,
+                                 editor=ChangeSet(self.root)).run("修改 app.js")
+        self.assertEqual(result["outcome"], "blocked")
+        self.assertEqual(result["error_kind"], "unsupported_edit_language")
+        self.assertEqual(client.calls, 2)
+        self.assertEqual((self.root / "app.js").read_text(), "const value = 1;\n")
+
+    def test_non_python_proposal_cannot_bypass_approval_scope(self):
+        with self.assertRaisesRegex(ValueError, "仅支持修改 Python 文件"):
+            PatchProposal({"app.js": (b"const value = 1;\n", b"const value = 2;\n")}, PASS)
+
     def test_missing_helper_is_reassessed_and_implemented_near_budget_limit(self):
         client = ScriptedClient([
             {"type": "tool_call", "tool": "read_file", "arguments": {"path": "main.py"}},

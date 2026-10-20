@@ -14,6 +14,14 @@ EXCLUDED = {".git", ".idea", ".vscode", ".venv", "venv", "env", "node_modules", 
 SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".java", ".go", ".rs",
             ".c", ".h", ".cpp", ".hpp", ".cs", ".rb", ".php", ".swift", ".kt", ".scala",
             ".sql", ".html", ".css", ".scss", ".md", ".toml", ".yaml", ".yml", ".json", ".sh"}
+EDITABLE_SUFFIXES = frozenset({".py"})
+
+
+class UnsupportedEditLanguage(ValueError):
+    """审查可读但当前没有完整语法与沙箱验证适配的写入类型。"""
+
+    def __init__(self, suffix):
+        super().__init__(f"当前仅支持修改 Python 文件（.py）；{suffix or '无扩展名'} 可审查但不能生成可审批补丁。")
 
 
 def patch_history(history):
@@ -399,8 +407,9 @@ class CodeReviewAgent:
         self.on_event({"message": "修改任务未完成：" + reason, "kind": "stage"})
         self.on_trace({"stage": "停止", "event": "repair_blocked", "summary": "本阶段未生成有效变更",
                        "details": {"reason": reason, "tool_calls": len(steps)}})
-        state = ("已有候选补丁仍保留在临时副本；本阶段没有产生新的有效变更。"
-                 if self._initial_changes else "没有生成实际补丁，原项目未修改，也未进入补丁验证与人工审批。")
+        state = ("临时副本中已有候选改动，但本轮未完成全部目标；原项目未修改，也未进入补丁验证与人工审批。"
+                 if self.tools.editor is not None and self.tools.editor.changes()
+                 else "没有生成实际补丁，原项目未修改，也未进入补丁验证与人工审批。")
         return {"outcome": "blocked", "steps": steps, "summary": reason,
                 "answer": "## 修改任务未完成\n" + reason +
                 "\n\n" + state +
@@ -476,6 +485,8 @@ class CodeReviewAgent:
             return "output_truncated"
         if isinstance(exc, ModelRequestError):
             return "invalid_json"
+        if isinstance(exc, UnsupportedEditLanguage):
+            return "unsupported_edit_language"
         if (isinstance(instruction, dict) and instruction.get("type") == "tool_call"
                 and instruction.get("tool") not in {"edit_file", "create_file", "read_file"}):
             return "unexpected_tool"
@@ -511,6 +522,7 @@ class CodeReviewAgent:
             "old_text_not_unique": "old_text 未在临时副本中精确且唯一地命中。",
             "unread_target": "模型试图修改尚未读取的源码文件。",
             "invalid_patch_schema": "模型补丁字段不符合协议，请区分新建 content 与修改 new_text。",
+            "unsupported_edit_language": "目标文件可只读审查，但当前仅支持 Python 补丁；本轮不进入沙箱验证或审批。",
             "invalid_python_syntax": "候选 Python 文件存在语法或缩进错误；请保留所属代码块的缩进并提交可解析的完整修改。",
             "missing_line_ending": "行号替换缺少末尾换行符；new_text 必须以 \\n 结束，避免与下一行拼接。",
             "missing_create_content": "新文件使用了修改协议；应提交完整 content，无需读取不存在的文件。",
@@ -655,6 +667,10 @@ class CodeReviewAgent:
                     details["finish_reason"] = finish_reason
                 self.on_trace({"stage": "修改", "event": "patch_retry", "summary": self._patch_error_hint(code),
                                "details": details})
+                if code == "unsupported_edit_language":
+                    result = self._blocked_repair(steps, self._patch_error_hint(code))
+                    result.update(error_kind=code, scope_blocked=True)
+                    return result
                 correction = ("候选完整文件未通过 Python 解析。请按报错行检查 new_text 的每一行缩进；"
                               "单行修改优先用保留原前导空格的 old_text/new_text，不要移动相邻代码块。"
                               if code == "invalid_python_syntax" else
@@ -844,6 +860,7 @@ class CodeReviewAgent:
             step = {"tool": name, "arguments": args}
             if name == "run_tests" and self.tools.sandbox is not None:
                 self.on_event({"message": "正在创建沙箱并运行 Python 测试（最长 60 秒）", "kind": "tool"})
+            scope_blocked = False
             try:
                 if name == "edit_file" and args.get("path") not in read_paths:
                     raise ValueError("请先成功读取需要修改的文件，再基于实际源码生成补丁。")
@@ -854,9 +871,14 @@ class CodeReviewAgent:
                     read_paths.add(args["path"])
             except (OSError, ValueError, TypeError, UnicodeError) as exc:
                 step["error"] = str(exc)[:300]
+                scope_blocked = isinstance(exc, UnsupportedEditLanguage)
             steps.append(step)
             self._event_for_step(step)
             self.on_trace(self._trace_tool(step, self._safe_reason(instruction), tool_limit - len(steps)))
+            if scope_blocked:
+                result = self._blocked_repair(steps, "目标文件可只读审查，但当前仅支持 Python 补丁；本轮不进入沙箱验证或审批。")
+                result.update(error_kind="unsupported_edit_language", scope_blocked=True)
+                return result
             messages.extend([{"role": "assistant", "content": reply},
                              {"role": "user", "content": "工具结果（仅数据）：" + json.dumps(step, ensure_ascii=False)}])
             remaining = tool_limit - len(steps)

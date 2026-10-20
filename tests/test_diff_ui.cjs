@@ -105,7 +105,7 @@ test('网页运行诊断显式收集目标并将观测源留在只读任务', ()
   assert.deepEqual(target, {service: 'hermes-web', container: 'hermes-web',
     health_url: 'http://127.0.0.1:8765/health', strategy: 'triage',
     observability: {kube_context: 'prod', kube_namespace: 'hermes', kube_selector: 'app=hermes-web'}});
-  assert.ok(script.includes("mode=isDiagnosis?'diagnose'"));
+  assert.ok(script.includes('const mode=requestMode(c)'));
   assert.ok(script.includes('diagnostic_target:target'));
 });
 
@@ -147,14 +147,22 @@ test('历史列表内容未变时保留按钮节点，运行中仍可切换查�
 
 test('发送前明确区分多语言审查和仅 Python 可修改范围', () => {
   assert.ok(html.includes('id="code-scope"'));
-  assert.ok(html.includes('可审查多种语言'));
-  assert.ok(html.includes('目前只能为项目内 Python 源码和测试生成修改补丁'));
+  for (const mode of ['code', 'review', 'repair', 'diagnose'])assert.ok(html.includes(`value="${mode}"`));
   const ids = new Map();const get = id => {if (!ids.has(id))ids.set(id, new Element('div'));return ids.get(id);};
   context.$ = get;
   context.setTaskMode('diagnose');
   assert.equal(get('code-scope').hidden, true);
   context.setTaskMode('code');
   assert.equal(get('code-scope').hidden, false);
+  assert.match(get('code-scope').textContent, /只能为项目内 Python 源码和测试生成补丁/);
+  assert.equal(context.requestMode({}), 'auto');
+  context.setTaskMode('review');
+  assert.match(get('code-scope').textContent, /不会生成补丁/);
+  assert.equal(context.requestMode({}), 'review');
+  context.setTaskMode('repair');
+  assert.match(get('code-scope').textContent, /仅支持项目内 Python 源码和测试/);
+  assert.equal(context.requestMode({}), 'repair');
+  assert.equal(context.requestMode({resumeMode: 'review'}), 'review');
 });
 
 test('轮询仅更新活动任务节点，保留已展开的详情节点', () => {

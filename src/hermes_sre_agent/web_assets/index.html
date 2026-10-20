@@ -49,7 +49,7 @@ dialog{width:min(580px,94vw);border:1px solid var(--line);border-radius:16px;pad
     <div class="suggestions"><button class="suggestion" data-question="帮我审查这个项目，找出可能导致运行失败的 bug，并说明文件、行号和触发条件。">检查潜在 bug<small>异常、边界条件与错误处理</small></button><button class="suggestion" data-question="检查这个项目的权限校验和输入处理，指出有代码证据的安全问题。">检查安全问题<small>权限、输入校验与数据暴露</small></button></div>
    </section><div id="messages"></div>
   </div></div>
-  <div class="composer-wrap"><form class="composer" id="chat-form"><div class="task-mode-row"><label for="task-mode">任务类型</label><select id="task-mode"><option value="code">代码审查 / 修改</option><option value="diagnose">运行诊断（只读）</option></select></div><div class="diagnostic-settings" id="diagnostic-settings" hidden>
+  <div class="composer-wrap"><form class="composer" id="chat-form"><div class="task-mode-row"><label for="task-mode">任务类型</label><select id="task-mode"><option value="code">代码（自动判断）</option><option value="review">只读审查（多语言）</option><option value="repair">实施修改（仅 Python）</option><option value="diagnose">运行诊断（只读）</option></select></div><div class="diagnostic-settings" id="diagnostic-settings" hidden>
    <div class="diagnostic-grid"><label>服务名<input id="diagnostic-service" placeholder="如 hermes-web" autocomplete="off"></label><label>Docker 容器名<input id="diagnostic-container" placeholder="实际容器名" autocomplete="off"></label><label>健康检查地址<input id="diagnostic-health" placeholder="http://127.0.0.1:8765/health" autocomplete="off"></label><label>诊断方式<select id="diagnostic-strategy"><option value="triage">规则分诊（无需模型）</option><option value="agent">模型辅助（使用 .env 配置）</option></select></label></div>
    <details><summary>可选：Kubernetes / Prometheus / Grafana</summary><div class="diagnostic-grid"><label>Kubernetes context<input id="diagnostic-kube-context" autocomplete="off"></label><label>namespace<input id="diagnostic-kube-namespace" autocomplete="off"></label><label>label selector<input id="diagnostic-kube-selector" placeholder="app=hermes-web" autocomplete="off"></label><label>Prometheus 根地址<input id="diagnostic-prometheus-url" placeholder="https://prometheus.example.com" autocomplete="off"></label><label>Prometheus job<input id="diagnostic-prometheus-job" autocomplete="off"></label><label>Grafana 根地址<input id="diagnostic-grafana-url" placeholder="https://grafana.example.com" autocomplete="off"></label><label>Grafana 令牌环境变量名<input id="diagnostic-grafana-token-env" placeholder="HERMES_GRAFANA_TOKEN" autocomplete="off"></label></div></details>
    <p class="diagnostic-hint">目标必须明确填写；所选项目仅用于 Git 变更线索。规则分诊不调用模型，模型辅助会把采集证据发送到配置的模型服务。结果保存在本机会话；本入口不会重启服务或修改配置。</p>
@@ -233,8 +233,13 @@ const diagnosticInputs={service:'diagnostic-service',container:'diagnostic-conta
  kube_context:'diagnostic-kube-context',kube_namespace:'diagnostic-kube-namespace',kube_selector:'diagnostic-kube-selector',
  prometheus_url:'diagnostic-prometheus-url',prometheus_job:'diagnostic-prometheus-job',
  grafana_url:'diagnostic-grafana-url',grafana_token_env:'diagnostic-grafana-token-env'};
-function setTaskMode(mode){$('task-mode').value=mode;$('diagnostic-settings').hidden=mode!=='diagnose';$('code-scope').hidden=mode==='diagnose';
- $('question').placeholder=mode==='diagnose'?'例如：这个服务为什么变慢了？':'例如：帮我检查登录逻辑有哪些 bug…';}
+function setTaskMode(mode){$('task-mode').value=mode;$('diagnostic-settings').hidden=mode!=='diagnose';
+ const scope=$('code-scope');scope.hidden=mode==='diagnose';
+ scope.textContent=mode==='repair'?'修改范围：目前仅支持项目内 Python 源码和测试。JavaScript、TypeScript 等文件可审查，但不能生成可批准的修改；不支持的修改会明确停在“未完成”。补丁须经沙箱验证和人工批准才会写回。':
+  mode==='review'?'只读审查支持多种语言；本模式不会生成补丁、修改项目或请求写回审批。':
+  '能力范围：可审查多种语言；自动判断为修改任务后，目前只能为项目内 Python 源码和测试生成补丁。非 Python 文件可审查，但暂不能自动修改；写回仍需验证和人工批准。';
+ $('question').placeholder=mode==='diagnose'?'例如：这个服务为什么变慢了？':mode==='repair'?'例如：修复 main.py 中的边界错误…':'例如：帮我检查登录逻辑有哪些 bug…';}
+function requestMode(c){const selected=$('task-mode').value;return c.resumeMode||(selected==='code'?'auto':selected);}
 function diagnosticTarget(){const values={};for(const [key,id] of Object.entries(diagnosticInputs))values[key]=$(id).value.trim();
  return {service:values.service,container:values.container,health_url:values.health_url,
   strategy:$('diagnostic-strategy').value,observability:Object.fromEntries(Object.entries(values).filter(([key,value])=>
@@ -309,6 +314,7 @@ function renderChat() {
   if(turn===c.turns.at(-1)&&turn.status==='interrupted'&&c.hydrated&&!projectLocked(c)){
    const actions=element('div','task-actions');const resume=element('button','text-button','继续任务');resume.type='button';resume.onclick=()=>{const applied=turn.proposal?.state==='applied';c.resumeMode=applied?'review':turn.mode||'auto';
     if(turn.mode==='diagnose')restoreDiagnosticTarget(turn.diagnostic_target);
+    else setTaskMode(applied?'review':['repair','review'].includes(turn.mode)?turn.mode:'code');
     $('question').value=applied?'继续核对刚才已写回的修改，并总结结果。':'继续完成刚才中止的任务，沿用原需求和已保存的上下文。';$('chat-form').requestSubmit();};actions.append(resume);box.append(actions);
   }
   if(turn.cancelError)box.append(element('p','error',turn.cancelError));
@@ -363,8 +369,8 @@ function renderChat() {
  const waiting=c.turns.some(t=>t.status==='awaiting_review')||c.conversations.some(item=>item.status==='awaiting_review');
  $('send').disabled=!state.selected||!c.hydrated||projectLocked(c)||waiting||c.loading;$('send').textContent=c.loading?'恢复中…':projectLocked(c)?'处理中…':'发送 ↑';
  $('new-chat').disabled=!state.selected||projectLocked(c)||waiting||c.loading;
- $('composer-note').textContent=!state.selected?'先打开一个项目':c.loading?'正在恢复会话':historyReadOnly(c)?'后台任务运行中 · 历史会话只读':waiting?'请先处理待审批的修改':c.busy?'Agent 正在工作':$('task-mode').value==='diagnose'?'填写真实服务目标后发送 · 只读采集':'描述问题或修改需求 · Enter 发送';
- document.querySelector('.footnote').textContent=$('task-mode').value==='diagnose'?'运行诊断只读；规则分诊不会调用模型，模型辅助会发送采集证据至配置的模型服务。':'Hermes 会自动选择审查或修复流程；写回原项目需要你在弹窗批准。';
+ $('composer-note').textContent=!state.selected?'先打开一个项目':c.loading?'正在恢复会话':historyReadOnly(c)?'后台任务运行中 · 历史会话只读':waiting?'请先处理待审批的修改':c.busy?'Agent 正在工作':$('task-mode').value==='diagnose'?'填写真实服务目标后发送 · 只读采集':$('task-mode').value==='repair'?'仅 Python 修改 · 验证后人工审批':$('task-mode').value==='review'?'多语言只读审查 · 不修改文件':'描述问题或修改需求 · Enter 发送';
+ document.querySelector('.footnote').textContent=$('task-mode').value==='diagnose'?'运行诊断只读；规则分诊不会调用模型，模型辅助会发送采集证据至配置的模型服务。':$('task-mode').value==='review'?'只读审查可阅读多种语言，不会生成修改补丁。':$('task-mode').value==='repair'?'仅 Python 源码及测试可生成补丁；验证通过后仍需你在弹窗批准写回。':'Hermes 会自动选择审查或修复流程；当前仅支持 Python 修改，写回需要你批准。';
  const pending=c.turns.find(t=>t.status==='awaiting_review'&&t.proposal&&!t.approvalBusy&&!state.approvalDismissed.has(t.id));
  if(pending)showApproval(pending);else if($('approval-dialog').open&&state.approvalTurnId&&!c.turns.some(t=>t.id===state.approvalTurnId&&t.status==='awaiting_review'))$('approval-dialog').close();
  requestAnimationFrame(updateJumpLatest);
@@ -475,9 +481,10 @@ async function monitor(projectId, turn) {
 $('chat-form').onsubmit=async e=>{
  e.preventDefault();if(!state.selected)return notice('请先打开项目。');const c=chat();if(!c.hydrated||projectLocked(c)||c.loading)return;
  const question=$('question').value.trim();if(!question)return notice('请输入想检查的问题。');if(question.length>4000)return notice('问题请控制在 4000 字以内。');
- const isDiagnosis=$('task-mode').value==='diagnose';const mode=isDiagnosis?'diagnose':c.resumeMode||'auto';c.resumeMode=null;
+ const isDiagnosis=$('task-mode').value==='diagnose';const mode=requestMode(c);
  const target=isDiagnosis?diagnosticTarget():undefined;
  if(isDiagnosis&&(!target.service||!target.container||!target.health_url))return notice('运行诊断必须填写服务名、Docker 容器名和健康检查地址。');
+ c.resumeMode=null;
  const projectId=state.selected.id;const turn={question,projectId,status:'queued',mode,diagnostic_target:target,events:[]};c.turns.push(turn);c.busy=true;c.draft='';$('question').value='';notice('');renderChat();$('scroll').scrollTop=$('scroll').scrollHeight;
  try{const data=await api('/api/reviews',{project_id:projectId,question,parent_id:c.parent,mode,diagnostic_target:target});turn.id=data.id;turn.conversation_id=data.conversation_id;c.active=turn;c.conversationId=data.conversation_id;rememberConversation(projectId,c.conversationId);renderChat();monitor(projectId,turn);loadConversationList(projectId).then(()=>{if(state.selected?.id===projectId)renderChat();}).catch(()=>{});}
  catch(error){c.turns=c.turns.filter(item=>item!==turn);c.busy=false;$('question').value=question;notice('提交失败：'+error.message);if(state.selected?.id===projectId)renderChat();}
