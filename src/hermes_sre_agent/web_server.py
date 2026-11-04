@@ -32,6 +32,7 @@ from .observability import ObservabilityConfig
 from .repair import RepairWorkflow, undo_applied_patch
 from .reporting import render_report
 from .triage import TriageAgent
+from .workspace_agent import WorkspaceAgent
 
 
 MAX_REQUEST_BYTES = 16_384
@@ -316,7 +317,7 @@ class ReviewJobs:
 
     def create(self, project_id, question, parent_id=None, allow_sandbox=False, mode="review", test_path="tests",
                diagnostic_target=None):
-        if not isinstance(mode, str) or mode not in {"auto", "review", "repair", "diagnose"}:
+        if not isinstance(mode, str) or mode not in {"auto", "review", "repair", "diagnose", "workspace"}:
             raise ValueError("任务模式无效。")
         if mode == "diagnose":
             diagnostic_target = validate_diagnostic_target(diagnostic_target)
@@ -755,6 +756,14 @@ class ReviewJobs:
                     needs_input = result.get("outcome") == "needs_input"
                     self._worker_trace(job_id, {"stage": "等待" if needs_input else "停止", "event": "needs_input" if needs_input else "blocked",
                                          "summary": "等待用户回答业务规则后继续修改" if needs_input else "修改未完成，等待补充需求或调整范围", "details": {}})
+                return
+            if mode == "workspace":
+                self._event(job_id, {"message": "正在规划项目任务并读取工作区证据", "kind": "stage"})
+                result = WorkspaceAgent(project, client, lambda e: self._event(job_id, e),
+                                        on_trace=lambda e: self._worker_trace(job_id, e),
+                                        cancel_event=self.cancel_events[job_id]).run(question, history)
+                self._check_cancelled(job_id)
+                self._update(job_id, status=result["outcome"], answer=result["answer"], steps=result["steps"])
                 return
             self._event(job_id, {"message": "只读分析：提供证据与建议，不生成修改补丁", "kind": "stage"})
             result = CodeReviewAgent(project, client, lambda e: self._event(job_id, e),

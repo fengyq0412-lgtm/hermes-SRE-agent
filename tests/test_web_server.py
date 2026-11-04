@@ -18,6 +18,29 @@ from hermes_sre_agent.repair import PatchProposal
 
 
 class WebConsoleTests(unittest.TestCase):
+    def test_workspace_mode_runs_general_task(self):
+        class FakeClient:
+            last_usage = None
+
+            def complete(self, _messages):
+                return '{"type":"final","answer":"这是项目任务的结果。"}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = ProjectRegistry()
+            project_id = registry.add(directory)["id"]
+            jobs = ReviewJobs(registry, client_factory=FakeClient,
+                              conversation_path=root / "conversations.sqlite3")
+            try:
+                created = jobs.create(project_id, "整理项目资料", mode="workspace")
+                jobs.futures[created["id"]].result(timeout=3)
+                result = jobs.get(created["id"])
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["mode"], "workspace")
+                self.assertIn("项目任务的结果", result["answer"])
+            finally:
+                jobs.executor.shutdown(wait=True)
+
     def test_backend_log_is_private_and_excludes_request_content(self):
         old_handlers = list(SERVER_LOGGER.handlers)
         old_level, old_propagate = SERVER_LOGGER.level, SERVER_LOGGER.propagate
