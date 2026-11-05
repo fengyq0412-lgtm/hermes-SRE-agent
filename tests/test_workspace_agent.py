@@ -43,6 +43,16 @@ class WorkspaceAgentTests(unittest.TestCase):
             tools.call("read_file", {"path": ".env"})
         self.assertFalse((self.root / "pwned").exists())
 
+    def test_command_tool_runs_only_in_sandbox_with_budget(self):
+        tools = WorkspaceTools(self.root)
+        with patch.object(tools.sandbox, "run_command", return_value={"status": "finished", "exit_code": 0,
+                                                                         "output": "ok", "scope": "sandbox"}) as run:
+            for _ in range(3):
+                self.assertEqual(tools.call("run_command", {"argv": ["python", "-V"]})["exit_code"], 0)
+            with self.assertRaisesRegex(ValueError, "3 次上限"):
+                tools.call("run_command", {"argv": ["python", "-V"]})
+            self.assertEqual(run.call_count, 3)
+
     def test_git_status_hides_excluded_paths_and_diff_is_scoped(self):
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         tools = WorkspaceTools(self.root)

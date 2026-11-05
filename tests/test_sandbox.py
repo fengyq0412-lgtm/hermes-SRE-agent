@@ -12,6 +12,35 @@ from hermes_sre_agent.sandbox import DockerSandbox, SandboxCancelled
 
 
 class SandboxTests(unittest.TestCase):
+    def test_command_uses_disposable_offline_container(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            (project / "main.py").write_text("value = 1\n")
+            sandbox = DockerSandbox(root)
+            result = {"status": "finished", "exit_code": 0, "output": "ok\n", "coverage": None}
+            with patch("hermes_sre_agent.sandbox.subprocess.run",
+                       return_value=SimpleNamespace(returncode=0)) as commands, \
+                    patch.object(sandbox, "_execute", return_value=result):
+                observed = sandbox.run_command(["python", "-c", "print('ok')"])
+            create = commands.call_args_list[0].args[0]
+            self.assertIn("--network", create)
+            self.assertIn("none", create)
+            self.assertIn("--read-only", create)
+            self.assertIn("/opt/hermes/command_runner.py", create)
+            self.assertEqual(commands.call_args_list[-1].args[0][:3], ["docker", "rm", "-f"])
+            self.assertEqual(observed["exit_code"], 0)
+            self.assertNotIn("coverage", observed)
+            self.assertEqual((project / "main.py").read_text(), "value = 1\n")
+
+    def test_command_rejects_invalid_argv_before_docker(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch("hermes_sre_agent.sandbox.subprocess.run") as command:
+                with self.assertRaises(ValueError):
+                    DockerSandbox(root).run_command("python -V")
+                with self.assertRaises(ValueError):
+                    DockerSandbox(root).run_command(["python", "bad\x00arg"])
+                command.assert_not_called()
+
     def test_snapshot_excludes_secrets_and_symlinks(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as copy:
             project = Path(root)
@@ -77,6 +106,21 @@ class SandboxTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("HERMES_SANDBOX_INTEGRATION") == "1", "需要显式开启真实 Docker 测试")
 class DockerIntegrationTests(unittest.TestCase):
+    def test_real_command_runs_in_copy_without_host_writeback(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = Path(root)
+            (project / "main.py").write_text("value = 1\n")
+            (project / ".env").write_text("PRIVATE=hidden\n")
+            code = ("from pathlib import Path; "
+                    "assert not Path('.env').exists(); "
+                    "Path('main.py').write_text('value = 2\\n'); "
+                    "print(Path('main.py').read_text().strip())")
+            result = DockerSandbox(root).run_command(["python", "-c", code])
+            self.assertEqual(result["status"], "finished", result)
+            self.assertEqual(result["exit_code"], 0, result)
+            self.assertIn("value = 2", result["output"])
+            self.assertEqual((project / "main.py").read_text(), "value = 1\n")
+
     def test_real_runner_reports_only_executed_business_lines(self):
         with tempfile.TemporaryDirectory() as root:
             project = Path(root)

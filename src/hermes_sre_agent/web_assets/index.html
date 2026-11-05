@@ -235,7 +235,7 @@ const diagnosticInputs={service:'diagnostic-service',container:'diagnostic-conta
  grafana_url:'diagnostic-grafana-url',grafana_token_env:'diagnostic-grafana-token-env'};
 function setTaskMode(mode){$('task-mode').value=mode;$('diagnostic-settings').hidden=mode!=='diagnose';
  const scope=$('code-scope');scope.hidden=mode==='diagnose';
- scope.textContent=mode==='workspace'?'项目任务可分步查看文件、搜索源码与读取 Git 线索；设置 HERMES_BRAVE_API_KEY 后可检索网页并提取正文。本模式只读，实际修改请选择“实施修改”。':mode==='repair'?'修改范围：目前仅支持项目内 Python 源码和测试。JavaScript、TypeScript 等文件可审查，但不能生成可批准的修改；不支持的修改会明确停在“未完成”。补丁须经沙箱验证和人工批准才会写回。':
+ scope.textContent=mode==='workspace'?'项目任务可检索网页、读取工作区，并在一次性 Docker 容器中运行命令。容器内修改不会写回原项目；实际修改请选择“实施修改”。':mode==='repair'?'修改范围：目前仅支持项目内 Python 源码和测试。JavaScript、TypeScript 等文件可审查，但不能生成可批准的修改；不支持的修改会明确停在“未完成”。补丁须经沙箱验证和人工批准才会写回。':
   mode==='review'?'只读审查支持多种语言；本模式不会生成补丁、修改项目或请求写回审批。':
   '能力范围：可审查多种语言；自动判断为修改任务后，目前只能为项目内 Python 源码和测试生成补丁。非 Python 文件可审查，但暂不能自动修改；写回仍需验证和人工批准。';
  $('question').placeholder=mode==='diagnose'?'例如：这个服务为什么变慢了？':mode==='repair'?'例如：修复 main.py 中的边界错误…':mode==='workspace'?'例如：检索近期资料并整理项目下一步方案…':'例如：帮我检查登录逻辑有哪些 bug…';}
@@ -370,7 +370,7 @@ function renderChat() {
  $('send').disabled=!state.selected||!c.hydrated||projectLocked(c)||waiting||c.loading;$('send').textContent=c.loading?'恢复中…':projectLocked(c)?'处理中…':'发送 ↑';
  $('new-chat').disabled=!state.selected||projectLocked(c)||waiting||c.loading;
  $('composer-note').textContent=!state.selected?'先打开一个项目':c.loading?'正在恢复会话':historyReadOnly(c)?'后台任务运行中 · 历史会话只读':waiting?'请先处理待审批的修改':c.busy?'Agent 正在工作':$('task-mode').value==='diagnose'?'填写真实服务目标后发送 · 只读采集':$('task-mode').value==='workspace'?'项目任务 · 分步读取与分析':$('task-mode').value==='repair'?'仅 Python 修改 · 验证后人工审批':$('task-mode').value==='review'?'多语言只读审查 · 不修改文件':'描述问题或修改需求 · Enter 发送';
- document.querySelector('.footnote').textContent=$('task-mode').value==='diagnose'?'运行诊断只读；规则分诊不会调用模型，模型辅助会发送采集证据至配置的模型服务。':$('task-mode').value==='workspace'?'项目任务可读取工作区与公网网页；设置检索密钥后可搜索网页。本模式不会执行任意命令或修改文件。':$('task-mode').value==='review'?'只读审查可阅读多种语言，不会生成修改补丁。':$('task-mode').value==='repair'?'仅 Python 源码及测试可生成补丁；验证通过后仍需你在弹窗批准写回。':'Hermes 会自动选择审查或修复流程；当前仅支持 Python 修改，写回需要你批准。';
+ document.querySelector('.footnote').textContent=$('task-mode').value==='diagnose'?'运行诊断只读；规则分诊不会调用模型，模型辅助会发送采集证据至配置的模型服务。':$('task-mode').value==='workspace'?'项目任务可读取工作区与公网网页，在隔离 Docker 快照中运行命令；不会修改原项目。':$('task-mode').value==='review'?'只读审查可阅读多种语言，不会生成修改补丁。':$('task-mode').value==='repair'?'仅 Python 源码及测试可生成补丁；验证通过后仍需你在弹窗批准写回。':'Hermes 会自动选择审查或修复流程；当前仅支持 Python 修改，写回需要你批准。';
  const pending=c.turns.find(t=>t.status==='awaiting_review'&&t.proposal&&!t.approvalBusy&&!state.approvalDismissed.has(t.id));
  if(pending)showApproval(pending);else if($('approval-dialog').open&&state.approvalTurnId&&!c.turns.some(t=>t.id===state.approvalTurnId&&t.status==='awaiting_review'))$('approval-dialog').close();
  requestAnimationFrame(updateJumpLatest);

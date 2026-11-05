@@ -143,6 +143,53 @@ class DockerSandbox:
                     if created_ok:
                         raise ValueError(f"沙箱清理失败，请检查容器 {name}。")
 
+    def run_command(self, argv):
+        """Execute argv in a disposable, offline project copy; never on the host."""
+        if (not isinstance(argv, list) or not 1 <= len(argv) <= 20
+                or any(not isinstance(arg, str) or not arg or len(arg) > 500 or "\x00" in arg
+                       for arg in argv)
+                or sum(len(arg) for arg in argv) > 2000):
+            raise ValueError("命令必须是长度受限的 argv 字符串列表。")
+        if self.cancel_event and self.cancel_event.is_set():
+            raise SandboxCancelled
+        name = "hermes-command-" + uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="hermes-command-") as directory:
+            count = self.snapshot(directory)
+            Path(directory).chmod(0o755)
+            command = ["docker", "create", "--pull=never", "--name", name,
+                       "--network", "none", "--read-only", "--cap-drop", "ALL",
+                       "--security-opt", "no-new-privileges", "--user", "65534:65534",
+                       "--memory", "512m", "--memory-swap", "512m", "--cpus", "1",
+                       "--pids-limit", "64", "--log-driver", "none",
+                       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777",
+                       "--env", "PYTHONDONTWRITEBYTECODE=1",
+                       "--env", "HERMES_COMMAND_JSON=" + json.dumps(argv),
+                       "--env", "HOME=/tmp", "--mount", f"type=bind,src={directory},dst=/source,readonly",
+                       "--entrypoint", "python", self.image, "-I", "/opt/hermes/command_runner.py"]
+            created_ok = False
+            try:
+                created = subprocess.run(command, capture_output=True, timeout=15)
+                if created.returncode:
+                    raise ValueError(f"无法创建命令沙箱：请重新构建 {self.image} 镜像并启动 Docker。")
+                created_ok = True
+                if self.cancel_event and self.cancel_event.is_set():
+                    raise SandboxCancelled
+                result = self._execute(name, count, [])
+                result["image"] = self.image
+                result["scope"] = "一次性容器中的过滤快照；无网络；修改不会写回原项目"
+                result.pop("coverage", None)
+                return result
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                raise ValueError("Docker 未安装或响应超时，命令未运行。") from exc
+            finally:
+                try:
+                    removed = subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=10)
+                    if removed.returncode and created_ok:
+                        raise ValueError(f"命令沙箱清理失败，请检查容器 {name}。")
+                except (OSError, subprocess.TimeoutExpired):
+                    if created_ok:
+                        raise ValueError(f"命令沙箱清理失败，请检查容器 {name}。")
+
     def _execute(self, name, count, targets):
         process = subprocess.Popen(["docker", "start", "-a", name], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         output = bytearray()
